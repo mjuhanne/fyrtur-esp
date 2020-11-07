@@ -1,0 +1,15 @@
+# Sparkfun FT232RL adapter on Mac OS X
+CONFIG_ESPTOOLPY_PORT="/dev/tty.usbserial-A40081Ws"
+
+# Set OTA partitions
+CONFIG_PARTITION_TABLE_TWO_OTA=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_FILENAME="partitions_two_ota.csv"
+
+# Allow OTA update via normal HTTP
+CONFIG_OTA_ALLOW_HTTP=y
+
+# Required by mdns via wifi manager
+CONFIG_LWIP_IPV6=y
+
