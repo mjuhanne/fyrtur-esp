@@ -1,3 +1,5 @@
+#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
+
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -99,15 +101,17 @@ static const char cmd_force_up_6[2] = { 0xfa, 0xd3 }; // 6 degrees
 static const char cmd_force_down_6[2] = { 0xfa, 0xd4 }; // 6 degrees
 
 static const char cmd_reset[2] = { 0xfa, 0x00 };
+
+// commands supported by custom firmware
 static const char cmd_set_soft_limit[2] = { 0xfa, 0xee };
 static const char cmd_set_hard_maximum[2] = { 0xfa, 0xcc };
 
 static const char cmd_ext_version[2] = { 0xcc, 0xdc };
 static const char cmd_ext_status[2] = { 0xcc, 0xde };
 static const char cmd_ext_limits[2] = { 0xcc, 0xdf };
-static const char cmd_ext_set_speed[2] = { 0x20, 0x00 };
-static const char cmd_ext_set_default_speed[2] = { 0x30, 0x00 };
-static const char cmd_ext_set_minimum_voltage[2] = { 0x40, 0x00 };
+static const char cmd_ext_set_speed[2] = { 0x20, 0x00 };            // second byte is the speed
+static const char cmd_ext_set_default_speed[2] = { 0x30, 0x00 };    // second byte is the default speed
+static const char cmd_ext_set_minimum_voltage[2] = { 0x40, 0x00 };  // second byte is minimum operating voltage (0x00 = no minimum)
 
 static const char cmd_ext_go_to[2] = { 0x10, 0x00 }; // target position is the lower 4 bits of the 1st byte + 2nd byte (12 bits of granularity)
 
@@ -446,7 +450,7 @@ int blinds_task_reset() {
     blinds_task_read_status_reg_blocking(STATUS_REG_1, 500);
     if (blinds_motor_pos == 0x32) {
         ESP_LOGI(TAG,"Blinds have been reset. Winding up until hard stop..");
-        blinds_task_move(DIRECTION_UP, 0, 0, false, false);
+        blinds_task_move(DIRECTION_UP, -1, -1, false, false);
         blinds_status = BLINDS_RESETTING;
     } else {
         ESP_LOGE(TAG,"Blinds have NOT been reset (position %.2f != 0x32!)", blinds_motor_pos);

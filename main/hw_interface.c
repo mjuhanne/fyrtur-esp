@@ -118,7 +118,7 @@ bool check_double_click( int button ) {
         // double click of either of the buttons causes SET_SOFT_LOWER_LIMIT
         IOT_SET_LIMITS_LED();
         
-        //FIXME blinds_set_soft_limit();
+        blinds_set_soft_limit();
 
         last_short_click_timestamps[button] = 0;
         return 1;
@@ -138,7 +138,7 @@ void check_double_btn_released() {
         // and now the button(s) have been released, so we actually invoke the RESET_LIMITS
         ESP_LOGW(TAG,"Reset blinds limits!");
         
-        //FIXME blinds_reset();
+        blinds_reset();
 
         IOT_RESET_LIMITS_LED();
     } else if (double_btn_stage == FACTORY_RESET_IMMINENT) {
