@@ -31,7 +31,7 @@ There are many ways one can install the module. Probably the easiest way is to m
  * Unsolder the battery power wiring and replace it with a connector with your own liking. A DC adapter has to be used since MQTT connection and sleep mode don't go so well together and the original battery will be soon empty. If using [custom Fyrtur motor module firmware](https://github.com/mjuhanne/fyrtur-motor-board) a 5 volt DC adapter can be used, otherwise the minimum operating voltage is around 6-6.5V.
  * Unsolder the Zigbee module. This can be achieved with a broad solder tip or with a desoldering station / hot air rework station. Care has to be taken not to inadvertently lift off the pads!
 
- ![Fyrtur main module wiring](images/fyrtur-main-board.png)
+ ![Fyrtur main module wiring](images/Fyrtur-main-board.png)
 
 #### Custom PCB 
 
