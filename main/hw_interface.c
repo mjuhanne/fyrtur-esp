@@ -75,7 +75,7 @@ void handle_single_btn_click( int button ) {
 }
 
 void handle_long_btn_press( int button ) {
-
+    // TODO
 }
 
 void check_single_click() {
@@ -118,7 +118,7 @@ bool check_double_click( int button ) {
         // double click of either of the buttons causes SET_SOFT_LOWER_LIMIT
         IOT_SET_LIMITS_LED();
         
-        blinds_set_soft_limit();
+        blinds_set_max_length();
 
         last_short_click_timestamps[button] = 0;
         return 1;

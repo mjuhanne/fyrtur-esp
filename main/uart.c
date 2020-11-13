@@ -1,5 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "driver/uart.h"
+#include "esp_log.h"
+
 #include "uart.h"
 #include "hw_interface.h"
 
@@ -13,6 +15,7 @@ static const char * TAG = "UART";
 static const int UART_RX_BUF_SIZE = 1024;
 
 void init_uart() {
+    ESP_LOGI(TAG,"Configuring motor unit UART..");
     uart_config_t uart_config = {
         .baud_rate = 2400,
         .data_bits = UART_DATA_8_BITS,

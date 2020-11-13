@@ -22,21 +22,21 @@ extern bool run_console();
 
 
 #define TAG "fyrtur"
-#define DEFAULT_SENSOR_BROADCAST_PERIOD 10000 // ms
-#define DEFAULT_MOTOR_SPEED 25
+#define DEFAULT_SENSOR_BROADCAST_INTERVAL 10 // seconds
+#define DEFAULT_MOTOR_SPEED 25  // rpm
 
 #define MQTT_SETTING_MOTOR_SPEED "speed"
 #define MQTT_SETTING_DEFAULT_MOTOR_SPEED "default_speed"
 #define MQTT_SETTING_MINIMUM_OPERATING_VOLTAGE "minimum_voltage"
 
-#define MQTT_SETTING_SENSOR_BROADCAST_PERIOD "sensor_broadcast_period"
+#define MQTT_SETTING_SENSOR_BROADCAST_INTERVAL "sensor_broadcast_interval"
 
 const char node_base_name[] = TAG;
 
 #define NODE_BUILD_VERSION __DATE__ "-" __TIME__
 
-static bool sensor_enabled = false;
-static uint32_t sensor_broadcast_period = DEFAULT_SENSOR_BROADCAST_PERIOD;
+static bool sensor_detected = false;
+static uint32_t sensor_broadcast_interval = DEFAULT_SENSOR_BROADCAST_INTERVAL * 1000;   // interval is stored as milliseconds
 
 int node_handle_mqtt_set(void * arg) {
     iot_variable_t * var = (iot_variable_t*)arg;
@@ -70,13 +70,13 @@ int node_handle_mqtt_set(void * arg) {
             mqtt_publish_error("Invalid minimum voltage!");
         }
         return 1;
-    } else if (strcmp(var->name,MQTT_SETTING_SENSOR_BROADCAST_PERIOD)==0) {
-        int period = atoi(var->data);
-        if (period >= 0) {
-            sensor_broadcast_period = period;
+    } else if (strcmp(var->name,MQTT_SETTING_SENSOR_BROADCAST_INTERVAL)==0) {
+        int interval = atoi(var->data);
+        if (interval >= 0) {
+            sensor_broadcast_interval = interval * 1000; // interval is stored as milliseconds
         } else {
-            ESP_LOGE(TAG,"Invalid broadcast period %d!",period);
-            mqtt_publish_error("Invalid period!");
+            ESP_LOGE(TAG,"Invalid broadcast interval %d!",interval);
+            mqtt_publish_error("Invalid interval!");
         }
         return 1;
     }
@@ -111,10 +111,10 @@ int node_handle_mqtt_msg(void * arg) {
             }
         } else if (strcmp(msg->subtopic,"reset")==0) {
             blinds_reset();
-        } else if (strcmp(msg->subtopic,"set_soft_limit")==0) {
-            blinds_set_soft_limit();
-        } else if (strcmp(msg->subtopic,"set_hard_maximum")==0) {
-            blinds_set_hard_maximum();
+        } else if (strcmp(msg->subtopic,"set_max_len")==0) {
+            blinds_set_max_length();
+        } else if (strcmp(msg->subtopic,"set_full_len")==0) {
+            blinds_set_full_length();
         } else if (strcmp(msg->subtopic,"force_move_up")==0) {
             if (msg->data) {
                 float revs = atof(msg->data);
@@ -156,7 +156,7 @@ void blinds_motor_position_updated( float position ) {
 // device_type: cover
 // device_class: blind
 #define BLIND_HA_CFG "{\
-    \"name\": \"%s status\", \
+    \"name\": \"%s\", \
     \"device_class\": \"blind\", \
     \"command_topic\": \"/home/cover/%s/command\", \
     \"position_topic\": \"/home/cover/%s/position\", \
@@ -188,7 +188,7 @@ void node_publish_ha_cfg() {
 	// Configuration is published as "/home/cover/[node_name]/config"
     mqtt_publish_ha_cfg("cover", "config", BLIND_HA_CFG, 4);
 
-    if (sensor_enabled) {
+    if (sensor_detected) {
         mqtt_publish_ha_cfg("sensor", "temperature/config", SENSOR_TEMPERATURE_CFG, 2);
         mqtt_publish_ha_cfg("sensor", "humidity/config", SENSOR_HUMIDITY_CFG, 2);
     }
@@ -199,7 +199,8 @@ void node_publish_ha_cfg() {
 }
 
 void node_handle_mqtt_connected() {
-    //ESP_LOGW(TAG, "node_handle_mqtt_connected Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGD(TAG, "node_handle_mqtt_connected Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
     node_publish_ha_cfg();
     mqtt_publish_ext("node", "version", NODE_BUILD_VERSION, true);
 
@@ -208,9 +209,6 @@ void node_handle_mqtt_connected() {
     } else {
         mqtt_publish_ext("node", "motor_version", "Original", true);        
     }
-
-    //ESP_LOGW(TAG, "node_handle_mqtt_connected #2 Stack: %d", uxTaskGetStackHighWaterMark(NULL));
-    iot_led_blink(STATUS_LED,0,30,0, 500, MQTT_LED_PRIORITY);
 }
 
 int node_handle_name_change(void * arg) {
@@ -220,13 +218,13 @@ int node_handle_name_change(void * arg) {
 
 
 int node_handle_ota( void * arg ) {
-    iot_led_set_priority(STATUS_LED, 30, 0, 30, OTA_LED_PRIORITY);
+    IOT_OTA_STARTING();
     return 0;
 }
 
 void node_handle_ota_failed() {
-    iot_led_set_priority(STATUS_LED, 0, 0, 0, -1); // release priority lock
-    iot_led_burst(STATUS_LED, 30, 0, 0, 300, 300, 3, 5, 1000, 0);
+    iot_led_set_priority(STATUS_LED, 0, 0, 0, -1); // release previously set priority lock
+    IOT_OTA_FAILED();
 }
 
 
@@ -302,7 +300,7 @@ void app_main()
     // Initialize SI7021 / HTU21D temperature & humidity sensor
     if (si7021_init(I2C_NUM_0, I2C_SDA_PIN, I2C_SCL_PIN, GPIO_PULLUP_ENABLE, GPIO_PULLUP_ENABLE) == SI7021_ERR_OK) {
         ESP_LOGI(TAG,"SI7021 / HTU21D temperature & humidity sensor detected. Sending periodic status updates..");
-        sensor_enabled = true;
+        sensor_detected = true;
     } else {
         ESP_LOGE(TAG,"Temperature sensor not found!");
     }
@@ -311,6 +309,7 @@ void app_main()
     blinds_init();
 
     // Set motor speed
+    /*
     if (blinds_is_custom_firmware()) {    
         float speed;
         if (iot_get_nvs_float(MQTT_SETTING_MOTOR_SPEED, &speed)) {
@@ -321,6 +320,7 @@ void app_main()
         }
         blinds_set_speed(speed);
     }    
+    */
 
     // set verbose logging for debugging purposes
     iot_logging();
@@ -349,27 +349,29 @@ void app_main()
     uint32_t sensor_timestamp = iot_timestamp();
     while (1) {
 
-        if (sensor_enabled) {
-            if (iot_timestamp() - sensor_timestamp > sensor_broadcast_period ) {
-                sensor_timestamp = iot_timestamp();
+        if (sensor_detected) {
+            if (sensor_broadcast_interval != 0) {   // broadcast only if it isn't disabled
+                if (iot_timestamp() - sensor_timestamp > sensor_broadcast_interval ) {
+                    sensor_timestamp = iot_timestamp();
 
-                float temperature = si7021_read_temperature();
-                float humidity = si7021_read_humidity();
-                
-                char temp_string[10];
-                char hum_string[10];
-                if (temperature==-999) 
-                    strcpy(temp_string,"ERR");
-                else
-                    snprintf(temp_string, 10,"%.1f", temperature);
-                if (humidity==-999) 
-                    strcpy(hum_string,"ERR");
-                else
-                    snprintf(hum_string, 10,"%.0f", humidity);
-                ESP_LOGI(TAG, "Sensor: %s°C - %s%%", temp_string, hum_string);
-                if (iot_is_connected()) {
-                    mqtt_publish("sensor", "temperature", temp_string);
-                    mqtt_publish("sensor", "humidity", hum_string);                
+                    float temperature = si7021_read_temperature();
+                    float humidity = si7021_read_humidity();
+                    
+                    char temp_string[10];
+                    char hum_string[10];
+                    if (temperature==-999) 
+                        strcpy(temp_string,"ERR");
+                    else
+                        snprintf(temp_string, 10,"%.1f", temperature);
+                    if (humidity==-999) 
+                        strcpy(hum_string,"ERR");
+                    else
+                        snprintf(hum_string, 10,"%.0f", humidity);
+                    ESP_LOGI(TAG, "Sensor: %s°C - %s%%", temp_string, hum_string);
+                    if (iot_is_connected()) {
+                        mqtt_publish("sensor", "temperature", temp_string);
+                        mqtt_publish("sensor", "humidity", hum_string);                
+                    }
                 }
             }
         }

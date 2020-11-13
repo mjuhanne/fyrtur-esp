@@ -3,8 +3,8 @@
 	Hardware interface for controlling blinds:
 
 	UP/DOWN BUTTONS:  
-		Single click: Starts rolling blinds up/down if they are stopped. Otherwise stops movement.
-		Double click: Set lower curtain limit to the current position (curtains must be stopped first)
+		Single click: Starts rolling blinds up/down if they are stopped. Otherwise stops movement. LED will blink once.
+		Double click: Set lower curtain limit to the current position (curtains must be stopped first). LED will blink twice.
 
 	UP BUTTON held down for 5 seconds: Start WiFi access point
 
@@ -21,14 +21,10 @@
 
 	LED: 
 		- no blinking: in standby
-		- 1000ms on and off: WiFi needs configration (please connect to AP to configure)
-		- 2 blinks repeating: WiFi disconnected
-		- 1 blink repeating: WiFi connecting
-		- 2 sec blink: WiFi connected
-		- 1 faster blink repeating: Connecting to MQTT server
+		- 1000ms on and off: WiFi needs configration (please connect to Fyrtur AP)
+		- 2 short blinks repeating: Connecting to AP, or WiFI is in disconnected state
+		- 3 short blinks repeating: Connecting to MQTT server, or in disconnected state
 		- 2 sec blink: MQTT connected
-		- 3 blinks repeating: MQTT disconnected
-
 
 */
 #include "sdkconfig.h"
@@ -64,9 +60,9 @@
 
 #define IOT_UNCONFIGURED_LED() iot_led_pulse(STATUS_LED, IOT_WIFI_LED_COLOR, 1000, 1000, -1, NORMAL_LED_PRIORITY);
 #define IOT_WIFI_DISCONNECTED_LED() iot_led_burst(STATUS_LED, IOT_WIFI_LED_COLOR, 50, 300, 2, -1, 1000, WIFI_LED_PRIORITY);
-#define IOT_WIFI_CONNECTING_LED() iot_led_pulse(STATUS_LED, IOT_WIFI_LED_COLOR, 50, 800, -1, WIFI_LED_PRIORITY);
-#define IOT_WIFI_CONNECTED_LED() iot_led_blink(STATUS_LED, IOT_WIFI_LED_COLOR, 2000, WIFI_LED_PRIORITY);
-#define IOT_MQTT_CONNECTING_LED() iot_led_pulse(STATUS_LED, IOT_MQTT_LED_COLOR, 50, 400, -1, MQTT_LED_PRIORITY);
+#define IOT_WIFI_CONNECTING_LED() iot_led_burst(STATUS_LED, IOT_WIFI_LED_COLOR, 50, 300, 2, -1, 1000, WIFI_LED_PRIORITY);
+#define IOT_WIFI_CONNECTED_LED() ;	// ignored, since MQTT connection attempt is started right after this event
+#define IOT_MQTT_CONNECTING_LED() iot_led_burst(STATUS_LED, IOT_MQTT_LED_COLOR, 50, 300, 3, -1, 1000, MQTT_LED_PRIORITY);
 #define IOT_MQTT_CONNECTED_LED() iot_led_blink(STATUS_LED, IOT_MQTT_LED_COLOR, 2000, MQTT_LED_PRIORITY);
 #define IOT_MQTT_DISCONNECTED_LED() iot_led_burst(STATUS_LED, IOT_MQTT_LED_COLOR, 50, 300, 3, -1, 1000, MQTT_LED_PRIORITY);
 
@@ -79,6 +75,11 @@
 #define IOT_RESET_LIMITS_LED() iot_led_pulse(STATUS_LED, IOT_BTN_LED_COLOR, 100, 100, 3, NORMAL_LED_PRIORITY );
 
 #define IOT_SHORT_CLICK_LED() iot_led_blink(STATUS_LED, IOT_BTN_LED_COLOR, 100, BTN_LED_PRIORITY);
+
+#define IOT_OTA_STARTING() iot_led_set_priority(STATUS_LED, 30, 0, 30, OTA_LED_PRIORITY);
+
+#define IOT_OTA_FAILED() iot_led_burst(STATUS_LED, 30, 0, 0, 300, 300, 5, 3, 1000, 0);
+
 
 
 

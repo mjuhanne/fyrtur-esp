@@ -105,10 +105,10 @@ static int send_blinds_cmd(int argc, char **argv)
         blinds_read_status_reg(4);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "reset")==0) {
         blinds_reset();
-    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_soft_limit")==0) {
-        blinds_set_soft_limit();
-    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_hard_maximum")==0) {
-        blinds_set_hard_maximum();
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_max_len")==0) {
+        blinds_set_max_length();
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_full_len")==0) {
+        blinds_set_full_length();
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "force_up")==0) {
         if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &revs) != 1) {
             ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (revolutions)");

@@ -1,3 +1,6 @@
+
+
+
 # IKEA Fyrtyr roller blind WiFi module firmware
 
 **Table of Contents**
@@ -15,7 +18,7 @@ First, why would one want to re-invent the wheel and replace the Ikea wireless m
 * MQTT and Home Assistant support including MQTT auto-discovery functionality for automatic detection of Fyrtur nodes
 * Possibility to use longer than 195cm blinds!
 * Slower and quieter operation possible
-* Possibility to integrate temperature/humidity sensors or maybe window break-in sensor?
+* Possibility to integrate temperature/humidity sensors or maybe a window break-in sensor?
 
 There also exists [custom Fyrtur motor module firmware](https://github.com/mjuhanne/fyrtur-motor-board) that makes it possible to have more finer control of the motor unit:
 
@@ -25,11 +28,11 @@ There also exists [custom Fyrtur motor module firmware](https://github.com/mjuha
 
 For more information about the custom firmware and the motor board itself (including reverse engineered schematics), please see the [motor module page](https://github.com/mjuhanne/fyrtur-motor-board).
 
-## Wiring and installation
+## Wiring
 
 There are many ways one can install the module. Probably the easiest way is to modify the original main board:
  * Unsolder the battery power wiring and replace it with a connector with your own liking. A DC adapter has to be used since MQTT connection and sleep mode don't go so well together and the original battery will be soon empty. If using [custom Fyrtur motor module firmware](https://github.com/mjuhanne/fyrtur-motor-board) a 5 volt DC adapter can be used, otherwise the minimum operating voltage is around 6-6.5V.
- * Unsolder the Zigbee module. This can be achieved with a broad solder tip or with a desoldering station / hot air rework station. Care has to be taken not to inadvertently lift off the pads!
+ * Unsolder the Zigbee module. This can be achieved with a broad solder tip or with a desoldering station / hot air rework station. Care has to be taken not to inadvertently lift off the pads! (And avoid what happened below with the 3rd pad on the right)
 
  ![Fyrtur main module wiring](images/Fyrtur-main-board.png)
 
@@ -38,4 +41,191 @@ There are many ways one can install the module. Probably the easiest way is to m
 There is also a [custom PCB](https://github.com/mjuhanne/ikea-fyrtur) that replaces the original Fyrtur main board. It's been designed to hold ESP12F (ESP8266 PCB module) along with the usual reset paraphernalia. Alternatively one can use it as an interface board. In the latter case a separate ready-made ESP32 or ESP8266 module can be connected to the motor, LED and buttons via the interface board.
 
  ![Fyrtur custom PCB](https://github.com/mjuhanne/ikea-fyrtur/raw/main/images/Fyrtur-custom-PCB-1.png)
+
+
+## Installation
+
+In the current state **it is recommended to use ESP32** since ESP8266 doesn't have enough memory to handle all the operation scenarios (especially when WiFi/MQTT manager Access Point is up) and its behaviour can be thus erratic at times. This might change in the future if the memory usage can be optimized significantly.
+
+#### SDK 
+Install the ESP32 SDK (esp-idf) by following the steps on the [installation page](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html). Make sure you can build and deploy an example project before continuing further
+
+#### Compiling and deployment
+Install the *fyrtur-esp* main program and its dependencies. The required components are shared by other home automation/ESP projects as well, so please create a directory layout like below.
+```
+mkdir iot
+cd iot
+git clone https://github.com/mjuhanne/fyrtur-esp.git
+mkdir components
+cd components
+git clone https://github.com/mjuhanne/node-framework.git
+git clone https://github.com/mjuhanne/esp-wifi-manager.git
+git clone https://github.com/mjuhanne/esp-si7021.git
+```
+Chdir to *fyrtur-esp* directory and build the application (use default menuconfig settings). Then deploy the application while monitoring the debug console for any possible errors.
+```
+idf.py menuconfig
+idf.py app
+idf.py -p /dev/tty.SLAB_USBtoUART flash monitor
+```
+The port may vary depending on the operating system and the ESP32 variant you have.
+
+#### Configuration
+Fyrtur module will create an Access Point with a custom web portal which can be used to configure the home network WiFi AP well as the MQTT server. The AP name is "Fyrtur-xxxxxx", where xxxxxx is the last 6 digits of ESP32 WiFi module MAC address. This variation is done because we want to distinguish one Fyrtur node from another. Password to the AP is by default 'esp32pwd' but that can be configured via menuconfig. 
+Connect to the AP and access http server at *10.10.0.1*. Use the interface to first connect to the target Access Point and then configure the MQTT server.
+The Fyrtur Access Point will shutdown after 1 minute of successful configuration. AP can be restarted via MQTT interface or via factory reset (see below).
+
+
+## Usage
+
+When first powered, the motor module does not know the current curtain position, so curtains are calibrated by rolling them up until motor starts stalling. 
+Fyrtur curtains can then be controlled manually by using the buttons or via MQTT protocol. Button interface is usable even when the module is not yet configured and/or the wireless link to home automation is down. 
+
+### Button interface
+
+* UP/DOWN BUTTONS:  
+		Single click: Starts rolling blinds up/down if they are stopped. Otherwise stops movement.  LED will blink once.
+		Double click: Set lower curtain limit to the current position (curtains must be stopped first). LED will blink twice.
+
+* UP BUTTON held down for 5 seconds: Restart WiFi access point
+
+* DOWN BUTTON held down for 5 seconds: Boot ESP module
+
+* BOTH buttons held down:
+	* 2000 milliseconds : reset "soft" lower blinds limit. LEDs will blink three times. Please release buttons at this stage. If buttons are held longer, this function will be skipped and functions below are selected instead
+	* 3500 ms : led starts blinking, warning about imminent factory reset
+	* 6000 ms :  Factory reset:
+			- Variables are reset to default values
+			- WiFi station and MQTT server are disconnected and their configuration is deleted
+			- Access Point is restarted in order to re-configure WiFi AP and MQTT server
+
+### LED signaling
+- no blinking: in standby
+- 1000ms on and off: WiFi/MQTT needs configuration (please connect to Fyrtur AP)
+- 2 short blinks repeating: Connecting to AP, or WiFI is in disconnected state
+- 3 short blinks repeating: Connecting to MQTT server, or in disconnected state
+- 2 sec blink: MQTT connected
+- On: OTA update process started
+- 5 short blinks repeated 3 times: OTA update failed
+
+### MQTT interface
+
+(In the examples below "fyrtur-e975c1" is just a sample node name)
+
+#### Curtain position
+*Fyrtur-esp* will publish curtain position with an outgoing MQTT topic:
+
+`/home/cover/fyrtur-e975c1/position`
+	- Payload: curtain position (0 = closed, 1000 = open)
+	
+#### Remote control
+*Fyrtur-esp* supports controlling the curtain with following incoming MQTT topics:
+
+- `/home/cover/fyrtur-e975c1/command`
+	- Payload: OPEN / CLOSE / STOP
+	- OPEN and CLOSE commands respects the (maximum) curtain length and thus stops when upper/lower limit is reached.
+- `/home/cover/fyrtur-e975c1/set_position`
+	- Payload: Number between 0 (closed) and 1000 (open)
+	- Lower/raise the curtain to the desired position
+- `/home/cover/fyrtur-e975c1/force_move_up`
+- `/home/cover/fyrtur-e975c1/force_move_down`
+	- Payload: Number of curtain rod revolutions to move
+	- Force movement outside the (maximum) curtain length.
+- `/home/cover/fyrtur-e975c1/reset`
+	- Reset the current (user defined) maximum curtain length to full (factory defined) curtain length and start rewinding curtains to upmost position.
+- `/home/cover/fyrtur-e975c1/set_max_len`
+	- Set the maximum (user defined) curtain length to current position
+- `/home/cover/fyrtur-e975c1/set_full_len`
+	- Set the full (factory defined) curtain length to current position. 
+
+For more information about the maximum/full curtain lenghts and curtain position calibration, the best source is currently the [custom Fyrtur motor module firmware documentation](https://github.com/mjuhanne/fyrtur-motor-board) 
+
+#### Node configuration via MQTT
+*Fyrtur-esp* supports also configuring additional settings. These will be stored into the non-volatile EEPROM/FLASH of either ESP32/8266 or the STM32 based motor module.
+
+- `/home/node/fyrtur-e975c1/set/name`
+	- Payload: new node name
+	- *Fyrtur-esp* will be renamed into the name specified in payload. Also node will subscribe to /home/node/[new_name]/# and /home/cover/[new_name]/ and use these new topics respectively
+- `/home/node/fyrtur-e975c1/set/default_speed`
+	- Payload: default motor speed in RPM (allowed values are between 2 and 25 RPM)
+- `/home/node/fyrtur-e975c1/set/speed`
+	- Payload: (temporary) motor speed in RPM
+	- Note! In contrast to "default_speed" above, this setting will not be written to EEPROM/FLASH in order to protect it from too frequent writes. Consequently this command can be used to develop for example variable curtain speed functionality (e.g. faster speed for quick curtain rewinding followed by slower speed when approaching the endpoint)
+- `/home/node/fyrtur-e975c1/set/minimum_voltage`
+	- Payload: minimum operating voltage
+	- The original Fyrtur module uses 7.4V battery which should be protected from under-voltage. The new module is intended to be supplied by 5-8 volt DC adapter so there's no need for battery protection anymore. The default setting is 0 (protection disabled). If needed, one can set the minimum operating voltage under which the motor will not be powered. **Note that this restriction will apply only to the DC motor, but not the STM32 chip inside motor module nor the ESP module!**
+
+#### Temperature and humidity sensor
+If *Fyrtur-esp* detects the external SI7021 / HTU21D temperature and humidity sensor, it will broadcast its measurements with following topics:
+
+- `/home/sensor/fyrtur-e975c1/temperature`
+	- Payload: temperature in Celsius degrees
+- `/home/sensor/fyrtur-e975c1/humidity`
+	- Payload: relative humidity (0-100)
+
+The default broadcast interval is 10 seconds. This can be configured with MQTT:
+
+- `/home/node/fyrtur-e975c1/set/sensor_broadcast_interval`
+	- Payload: interval in seconds (0 = broadcasting is disabled)
+
+#### MQTT Discovery
+Home Assistant supports [MQTT Discovery](https://www.home-assistant.io/docs/mqtt/discovery/), which facilitates the detection of the Fyrtur curtains without explicit configuration of each individual Fyrtur node. Note that MQTT Discovery has to be enabled first in Home Assistant configuration.
+When connection to MQTT server is made, an announcement message is published that declares the node and its affiliated command and status MQTT topics. In the case of Fyrtur curtains, the Home Assistant integration we are using is [MQTT Cover](https://www.home-assistant.io/integrations/cover.mqtt/)  with a  device class (a component subtype)  *"blind"*. 
+
+Example with a node name *"fyrtur-e975c1*":
+
+```
+/home/cover/fyrtur-e975c1/config
+```
+with JSON payload:
+```
+{    
+	"name": "fyrtur-e975c1",
+	"device_class": "blind",     
+	"command_topic": "/home/cover/fyrtur-e975c1/command",
+	"position_topic": "/home/cover/fyrtur-e975c1/position",
+	"set_position_topic": "/home/cover/fyrtur-e975c1/set_position",
+	"position_open": 1000
+}
+```
+
+If SI7021 / HTU21D temperature and humidity sensor is detected it will be announced as well:
+
+```
+/home/sensor/fyrtur-e975c1/temperature/config
+```
+with JSON payload:
+```
+{    
+	"name": "fyrtur-e975c1 temperature",
+	"device_class": "temperature",
+	"state_topic": "/home/sensor/fyrtur-e975c1/temperature"
+}
+```
+and
+```
+/home/sensor/fyrtur-e975c1/humidity/config
+```
+with JSON payload:
+```
+{    
+	"name": "fyrtur-e975c1 humidity",
+	"device_class": "humidity",
+	"state_topic": "/home/sensor/fyrtur-e975c1/humidity"
+}
+```
+
+#### OTA update
+The node-framework supports OTA updates via HTTP. The process is initiated with a MQTT topic:
+- `/home/node/fyrtur-e975c1/ota`
+	- Payload: URL of the ESP firmware
+	- Example: *"http://myfirmwareserver.local/esp/fyrtur.bin"*
+
+When process is started, LED will stay on until OTA update is complete. The module is rebooted automatically after successful update. If OTA update failed, LED will blink 5 times quickly, repeated by 3 times.
+
+Note that the OTA update procedure currently supports **only non-secure HTTP!** HTTPS support would require providing the Fyrtur module with at least a root certificate of a root certificate authority (a public one or one that you created yourself). Uploading the certificate could be done via Access point in configuration stage (this would need additional changes to the esp-wifi-manager). This same certificate could be used to enable SSL support for MQTT server as well.
+
+
+
+
 

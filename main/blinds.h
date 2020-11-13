@@ -25,8 +25,8 @@ typedef enum blinds_cmd_type {
 	blinds_cmd_set_default_speed,
 	blinds_cmd_stop,
 	blinds_cmd_reset,
-	blinds_cmd_set_soft_limit,
-	blinds_cmd_set_hard_maximum,
+	blinds_cmd_set_max_length,
+	blinds_cmd_set_full_length,
 	blinds_cmd_status,
 	blinds_cmd_raw,
 	blinds_cmd_ext_status,
@@ -55,7 +55,6 @@ typedef enum status_register_t {
     MAX_STATUS_REGISTERS = 7,
 } status_register_t;
 
-
 void blinds_init();
 
 int blinds_send_cmd_bytes( uint8_t cmd_byte1, uint8_t cmd_byte2 );
@@ -77,11 +76,10 @@ char * blinds_get_version();
 blinds_status_t blinds_get_status();
 blinds_direction_t blinds_get_direction();
 
-
 int blinds_stop();
 int blinds_reset(); 
-int blinds_set_soft_limit();
-int blinds_set_hard_maximum();
+int blinds_set_max_length();
+int blinds_set_full_length();
 
 // Callback
 extern void blinds_motor_position_updated( float position );

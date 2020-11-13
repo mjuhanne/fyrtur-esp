@@ -33,7 +33,7 @@ QueueHandle_t  blinds_queue = NULL;
     Custom motor firmware allows:
         - setting motor speed
         - higher granularity in motor position (and target position)
-        - quering additional variables (resetting-flag, soft and hard lower limits)
+        - quering additional variables (resetting-flag, maximum and full curtain lengths)
     See https://github.com/mjuhanne/fyrtur-motor-board
 */
 bool custom_fw = false;
@@ -103,8 +103,8 @@ static const char cmd_force_down_6[2] = { 0xfa, 0xd4 }; // 6 degrees
 static const char cmd_reset[2] = { 0xfa, 0x00 };
 
 // commands supported by custom firmware
-static const char cmd_set_soft_limit[2] = { 0xfa, 0xee };
-static const char cmd_set_hard_maximum[2] = { 0xfa, 0xcc };
+static const char cmd_set_max_length[2] = { 0xfa, 0xee };
+static const char cmd_set_full_length[2] = { 0xfa, 0xcc };
 
 static const char cmd_ext_version[2] = { 0xcc, 0xdc };
 static const char cmd_ext_status[2] = { 0xcc, 0xde };
@@ -453,7 +453,7 @@ int blinds_task_reset() {
         blinds_task_move(DIRECTION_UP, -1, -1, false, false);
         blinds_status = BLINDS_RESETTING;
     } else {
-        ESP_LOGE(TAG,"Blinds have NOT been reset (position %.2f != 0x32!)", blinds_motor_pos);
+        ESP_LOGE(TAG,"Blinds have NOT been reset (position %.2f != 50!)", blinds_motor_pos);
         blinds_status = BLINDS_STOPPED;
     }
     return 1;
@@ -464,40 +464,40 @@ int blinds_reset() {
 }
 
 
-int blinds_task_set_soft_limit() {
-    ESP_LOGI(TAG,"Setting blind length soft limit..");
-    blinds_send_cmd( cmd_set_soft_limit );
+int blinds_task_set_max_length() {
+    ESP_LOGI(TAG,"Setting maximum curtain length..");
+    blinds_send_cmd( cmd_set_max_length );
     // delay until motor has settled
     vTaskDelay(3000 / portTICK_PERIOD_MS);
     blinds_task_read_status_reg_blocking(STATUS_REG_1, 500);
     if (blinds_motor_pos == 0x64) {
-        ESP_LOGI(TAG,"Lower soft limit has been set to current position.");
+        ESP_LOGI(TAG,"Maximum curtain length has been set to current position.");
     } else {
-        ESP_LOGE(TAG,"Error setting soft limit (position %.2f != 0x64!)", blinds_motor_pos);
+        ESP_LOGE(TAG,"Error setting maximum curtain length (position %.2f != 100!)", blinds_motor_pos);
     }
     return 1;
 }
 
-int blinds_set_soft_limit() {
-	return blinds_generic_msg(blinds_cmd_set_soft_limit);
+int blinds_set_max_length() {
+	return blinds_generic_msg(blinds_cmd_set_max_length);
 }
 
-int blinds_task_set_hard_maximum() {
-    ESP_LOGI(TAG,"Setting maximum blind length (hard position)..");
-    blinds_send_cmd( cmd_set_hard_maximum );
+int blinds_task_set_full_length() {
+    ESP_LOGI(TAG,"Setting full curtain length..");
+    blinds_send_cmd( cmd_set_full_length );
     // delay until motor has settled
     vTaskDelay(3000 / portTICK_PERIOD_MS);
     blinds_task_read_status_reg_blocking(STATUS_REG_1, 500);
     if (blinds_motor_pos == 0x64) {
-        ESP_LOGI(TAG,"Maximum blind set has been set to current (hard) position.");
+        ESP_LOGI(TAG,"Full curtain length has been set to current position.");
     } else {
-        ESP_LOGE(TAG,"Error setting maximum blind position (position %.2f != 0x64!)", blinds_motor_pos);
+        ESP_LOGE(TAG,"Error full curtain length (position %.2f != 100!)", blinds_motor_pos);
     }
     return 1;
 }
 
-int blinds_set_hard_maximum() {
-	return blinds_generic_msg(blinds_cmd_set_hard_maximum);
+int blinds_set_full_length() {
+	return blinds_generic_msg(blinds_cmd_set_full_length);
 }
 
 int blinds_read_status_reg( status_register_t status_reg ) {
@@ -622,8 +622,8 @@ blinds_direction_t blinds_get_direction() {
 extern int uart_read( uint8_t * rx_buffer, int bytes, int timeout );
 
 
-void blinds_process_limit_status_reg( int resetting, int soft_limit, int hard_limit ) {
-	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: resetting: %d, soft_limit %d, hard_limit %d", resetting, soft_limit, hard_limit );
+void blinds_process_limit_status_reg( int resetting, int max_length, int full_length ) {
+	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: resetting: %d, max_length %d, full_length %d", resetting, max_length, full_length );
 	last_status_timestamps[EXT_LIMIT_STATUS_REG] = iot_timestamp();
 }
 
@@ -893,14 +893,14 @@ void blinds_task(void *pvParameter) {
            	 				blinds_task_reset();
             			}
             			break;
-            		case blinds_cmd_set_soft_limit: {
-	            			ESP_LOGI(TAG,"Set soft limit");
-	            			blinds_task_set_soft_limit();
+            		case blinds_cmd_set_max_length: {
+	            			ESP_LOGI(TAG,"Set maximum curtain length");
+	            			blinds_task_set_max_length();
     	        		}
         	    		break;
-            		case blinds_cmd_set_hard_maximum: {
-            				ESP_LOGI(TAG,"Set hard maximum");
-	            			blinds_task_set_hard_maximum();
+            		case blinds_cmd_set_full_length: {
+            				ESP_LOGI(TAG,"Set full curtain length");
+	            			blinds_task_set_full_length();
             			}
             			break;
             		case blinds_cmd_status: {
