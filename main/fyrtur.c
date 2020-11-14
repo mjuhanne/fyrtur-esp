@@ -85,7 +85,7 @@ int node_handle_mqtt_set(void * arg) {
 
 int node_handle_mqtt_msg(void * arg) {
     iot_mqtt_msg_t * msg = (iot_mqtt_msg_t*)arg;
-    if (strcmp(msg->device_type,"cover")==0) {
+    if (strcmp(msg->device_type,"control")==0) {
         if (strcmp(msg->subtopic,"command")==0) {
             if (msg->data) {
             	if (strcmp(msg->data,"OPEN")==0)
@@ -131,14 +131,10 @@ int node_handle_mqtt_msg(void * arg) {
                 ESP_LOGE(TAG,"force_move_down: number of revolutions not defined!");
                 mqtt_publish_error("Number of revolutions not defined!");
             }
-        } else if (strcmp(msg->subtopic,"position")==0) {
-        	// ignore position status sent by us
         } else {
             ESP_LOGE(TAG,"Invalid subtopic: '%s'", msg->subtopic);
             mqtt_publish_error("Invalid subtopic!");
         }
-    } else if (strcmp(msg->device_type,"sensor")==0) {
-        // ignore sensor updates sent by us
     } else {
         ESP_LOGE(TAG,"Invalid device_type: '%s'", msg->device_type);
         mqtt_publish_error("Invalid device_type!");
@@ -157,10 +153,11 @@ void blinds_motor_position_updated( float position ) {
 // device_class: blind
 #define BLIND_HA_CFG "{\
     \"name\": \"%s\", \
+    \"unique_id\": \"%s\", \
     \"device_class\": \"blind\", \
-    \"command_topic\": \"/home/cover/%s/command\", \
+    \"command_topic\": \"/home/control/%s/command\", \
     \"position_topic\": \"/home/cover/%s/position\", \
-    \"set_position_topic\": \"/home/cover/%s/set_position\", \
+    \"set_position_topic\": \"/home/control/%s/set_position\", \
     \"position_open\": 1000 \
     }"
 
@@ -186,7 +183,7 @@ void blinds_motor_position_updated( float position ) {
 void node_publish_ha_cfg() {
     // we must publish the config to Home Assistant.
 	// Configuration is published as "/home/cover/[node_name]/config"
-    mqtt_publish_ha_cfg("cover", "config", BLIND_HA_CFG, 4);
+    mqtt_publish_ha_cfg("cover", "config", BLIND_HA_CFG, 5);
 
     if (sensor_detected) {
         mqtt_publish_ha_cfg("sensor", "temperature/config", SENSOR_TEMPERATURE_CFG, 2);
@@ -296,6 +293,8 @@ void app_main()
     // Init console access. This is just for debugging purposes and used only on ESP32 since ESP8266 has scarce memory
     initialize_console();
 #endif
+
+    ESP_LOGW(TAG, "Stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
     // Initialize SI7021 / HTU21D temperature & humidity sensor
     if (si7021_init(I2C_NUM_0, I2C_SDA_PIN, I2C_SCL_PIN, GPIO_PULLUP_ENABLE, GPIO_PULLUP_ENABLE) == SI7021_ERR_OK) {

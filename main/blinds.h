@@ -30,7 +30,8 @@ typedef enum blinds_cmd_type {
 	blinds_cmd_status,
 	blinds_cmd_raw,
 	blinds_cmd_ext_status,
-	blinds_cmd_set_minimum_voltage
+	blinds_cmd_set_minimum_voltage,
+	blinds_cmd_set_location
 } blinds_cmd_type;
 
 typedef struct blinds_msg {
@@ -49,10 +50,11 @@ typedef enum status_register_t {
     STATUS_REG_3 = 2,
     STATUS_REG_4 = 3,
 // Extended status registers to be used with custom firmware
-    EXT_VERSION_REG = 4,
-    EXT_STATUS_REG = 5,
-    EXT_LIMIT_STATUS_REG = 6,
-    MAX_STATUS_REGISTERS = 7,
+    EXT_LOCATION_REG = 4,
+    EXT_VERSION_REG = 5,
+    EXT_STATUS_REG = 6,
+    EXT_LIMIT_STATUS_REG = 7,
+    MAX_STATUS_REGISTERS = 8,
 } status_register_t;
 
 void blinds_init();
@@ -68,13 +70,15 @@ int blinds_read_status_reg(status_register_t status_reg);
 int blinds_set_speed(float speed);
 int blinds_set_default_speed(float speed);
 int blinds_set_minimum_voltage(float voltage);
-float blinds_get_speed();
+int blinds_get_speed();
 float blinds_get_pos();
 bool blinds_is_custom_firmware();
 char * blinds_get_version();
 
 blinds_status_t blinds_get_status();
 blinds_direction_t blinds_get_direction();
+
+int blinds_set_location(int location);
 
 int blinds_stop();
 int blinds_reset(); 

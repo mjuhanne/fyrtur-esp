@@ -35,6 +35,7 @@ static int send_blinds_cmd(int argc, char **argv)
 {
     static const char *SEND_CMD_TAG = "BLINDS_CMD";
     float revs, position, speed;
+    int location;
     bool silent=false;
 
     int nerrors = arg_parse(argc, argv, (void **) &blinds_cmd_args);
@@ -98,11 +99,28 @@ static int send_blinds_cmd(int argc, char **argv)
         blinds_stop();
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "status")==0) {
         if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &position) != 1) {
-            blinds_get_status(0);
+            blinds_read_status_reg(STATUS_REG_1);
         } else
             blinds_read_status_reg(position-1);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "location")==0) {
+        blinds_read_status_reg(EXT_LOCATION_REG);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_location")==0) {
+        if (blinds_cmd_args.arg2->count > 0) {
+            if (sscanf(blinds_cmd_args.arg2->sval[0], "%d", &location) != 1) {
+                ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (location)");
+                return 1;
+            } else {
+                if (abs(location) < (8*256)) { // maximum parameter size is 12 bits (1 sign bit + 11 integer part bits)
+                    blinds_set_location(location);
+                } else {
+                    ESP_LOGE(SEND_CMD_TAG,"Location out of bounds!");
+                }
+            }
+        }       
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "ext_status")==0) {
+        blinds_read_status_reg(EXT_STATUS_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "limits")==0) {
-        blinds_read_status_reg(4);
+        blinds_read_status_reg(EXT_LIMIT_STATUS_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "reset")==0) {
         blinds_reset();
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_max_len")==0) {

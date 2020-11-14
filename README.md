@@ -121,37 +121,47 @@ Fyrtur curtains can then be controlled manually by using the buttons or via MQTT
 #### Remote control
 *Fyrtur-esp* supports controlling the curtain with following incoming MQTT topics:
 
-- `/home/cover/fyrtur-e975c1/command`
+- `/home/control/fyrtur-e975c1/command`
 	- Payload: OPEN / CLOSE / STOP
 	- OPEN and CLOSE commands respects the (maximum) curtain length and thus stops when upper/lower limit is reached.
-- `/home/cover/fyrtur-e975c1/set_position`
+- `/home/control/fyrtur-e975c1/set_position`
 	- Payload: Number between 0 (closed) and 1000 (open)
 	- Lower/raise the curtain to the desired position
-- `/home/cover/fyrtur-e975c1/force_move_up`
-- `/home/cover/fyrtur-e975c1/force_move_down`
+- `/home/control/fyrtur-e975c1/force_move_up`
+- `/home/control/fyrtur-e975c1/force_move_down`
 	- Payload: Number of curtain rod revolutions to move
 	- Force movement outside the (maximum) curtain length.
-- `/home/cover/fyrtur-e975c1/reset`
+- `/home/control/fyrtur-e975c1/reset`
 	- Reset the current (user defined) maximum curtain length to full (factory defined) curtain length and start rewinding curtains to upmost position.
-- `/home/cover/fyrtur-e975c1/set_max_len`
+- `/home/control/fyrtur-e975c1/set_max_len`
 	- Set the maximum (user defined) curtain length to current position
-- `/home/cover/fyrtur-e975c1/set_full_len`
+- `/home/control/fyrtur-e975c1/set_full_len`
 	- Set the full (factory defined) curtain length to current position. 
 
 For more information about the maximum/full curtain lenghts and curtain position calibration, the best source is currently the [custom Fyrtur motor module firmware documentation](https://github.com/mjuhanne/fyrtur-motor-board) 
 
+Other MQTT remote control topics:
+
+- `/home/control/fyrtur-e975c1/start_ap`
+	- restarts the WiFi Manager Access Point. Note that AP auto_shutdown is disabled so AP stays on until stopped
+- `/home/control/fyrtur-e975c1/stop_ap`
+	- stops the WiFi Manager Access Point
+- `/home/control/fyrtur-e975c1/restart`
+	- ESP module software reset
+
+
 #### Node configuration via MQTT
 *Fyrtur-esp* supports also configuring additional settings. These will be stored into the non-volatile EEPROM/FLASH of either ESP32/8266 or the STM32 based motor module.
 
-- `/home/node/fyrtur-e975c1/set/name`
+- `/home/control/fyrtur-e975c1/set/name`
 	- Payload: new node name
 	- *Fyrtur-esp* will be renamed into the name specified in payload. Also node will subscribe to /home/node/[new_name]/# and /home/cover/[new_name]/ and use these new topics respectively
-- `/home/node/fyrtur-e975c1/set/default_speed`
+- `/home/control/fyrtur-e975c1/set/default_speed`
 	- Payload: default motor speed in RPM (allowed values are between 2 and 25 RPM)
-- `/home/node/fyrtur-e975c1/set/speed`
+- `/home/control/fyrtur-e975c1/set/speed`
 	- Payload: (temporary) motor speed in RPM
 	- Note! In contrast to "default_speed" above, this setting will not be written to EEPROM/FLASH in order to protect it from too frequent writes. Consequently this command can be used to develop for example variable curtain speed functionality (e.g. faster speed for quick curtain rewinding followed by slower speed when approaching the endpoint)
-- `/home/node/fyrtur-e975c1/set/minimum_voltage`
+- `/home/control/fyrtur-e975c1/set/minimum_voltage`
 	- Payload: minimum operating voltage
 	- The original Fyrtur module uses 7.4V battery which should be protected from under-voltage. The new module is intended to be supplied by 5-8 volt DC adapter so there's no need for battery protection anymore. The default setting is 0 (protection disabled). If needed, one can set the minimum operating voltage under which the motor will not be powered. **Note that this restriction will apply only to the DC motor, but not the STM32 chip inside motor module nor the ESP module!**
 
@@ -165,7 +175,7 @@ If *Fyrtur-esp* detects the external SI7021 / HTU21D temperature and humidity se
 
 The default broadcast interval is 10 seconds. This can be configured with MQTT:
 
-- `/home/node/fyrtur-e975c1/set/sensor_broadcast_interval`
+- `/home/control/fyrtur-e975c1/set/sensor_broadcast_interval`
 	- Payload: interval in seconds (0 = broadcasting is disabled)
 
 #### MQTT Discovery
@@ -181,10 +191,11 @@ with JSON payload:
 ```
 {    
 	"name": "fyrtur-e975c1",
+	"unique_id": "fyrtur-e975c1",
 	"device_class": "blind",     
-	"command_topic": "/home/cover/fyrtur-e975c1/command",
+	"command_topic": "/home/control/fyrtur-e975c1/command",
 	"position_topic": "/home/cover/fyrtur-e975c1/position",
-	"set_position_topic": "/home/cover/fyrtur-e975c1/set_position",
+	"set_position_topic": "/home/control/fyrtur-e975c1/set_position",
 	"position_open": 1000
 }
 ```
@@ -217,7 +228,7 @@ with JSON payload:
 
 #### OTA update
 The node-framework supports OTA updates via HTTP. The process is initiated with a MQTT topic:
-- `/home/node/fyrtur-e975c1/ota`
+- `/home/control/fyrtur-e975c1/update_firmware`
 	- Payload: URL of the ESP firmware
 	- Example: *"http://myfirmwareserver.local/esp/fyrtur.bin"*
 

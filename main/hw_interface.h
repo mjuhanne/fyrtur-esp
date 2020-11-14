@@ -88,7 +88,7 @@
 #define BTN2_GPIO 22 // Btn down
 #define LED_GPIO 18
 #define I2C_SDA_PIN 13
-#define I2C_SCL_PIN 6
+#define I2C_SCL_PIN 19
 
 // Motor unit UART pins
 #define TXD_PIN (GPIO_NUM_23)	// TX pin to Motor unit
