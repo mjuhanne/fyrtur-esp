@@ -33,10 +33,11 @@ QueueHandle_t  blinds_queue = NULL;
     Custom motor firmware allows:
         - setting motor speed
         - higher granularity in motor position (and target position)
-        - quering additional variables (resetting-flag, maximum and full curtain lengths)
+        - quering additional variables (calibrating-flag, maximum and full curtain lengths)
     See https://github.com/mjuhanne/fyrtur-motor-board
 */
-bool custom_fw = false;
+motor_firmware_status_t motor_firmware_status;
+
 char version[MAX_VERSION_LENGTH];
 
 int version_major, version_minor;
@@ -47,7 +48,19 @@ blinds_status_t blinds_status = BLINDS_UNKNOWN;
 float blinds_motor_pos;	// Position reported by motor unit (between 0-100%). Custom firmware will handle finer granularity (0.0 - 100.0%)
 int blinds_battery_status;
 float blinds_voltage;
-int blinds_speed;  // Speed in rpm. 
+int blinds_speed;  // Current speed in rpm. 
+int blinds_target_speed;
+
+static bool diagnostics = false;   // if this is set, more verbose diagnostics data is sent via MQTT
+
+// These are reported only by custom firmware and are used for diagnostics only
+int blinds_calibrating;
+int blinds_max_length;
+int blinds_full_length;
+int blinds_motor_status;
+int blinds_location;
+int blinds_target_location;
+int blinds_default_speed;
 
 blinds_direction_t blinds_direction = DIRECTION_STOPPED;		// current direction the motor is moving
 
@@ -75,13 +88,18 @@ unsigned long last_status_timestamps[MAX_STATUS_REGISTERS];
  When using default firmware, the motor acknowledges and reports the target position with granularity of only 1% (integer units). 
  Therefore after reaching the integer position,  we go (if needed) the rest of the way (fractional part) 
  with discrete steps (90, 17.14 or 6.316 degrees). The finetune_threshold is compared to
- abs(reported_motor_position - target_position) and  uses same scale as motor position (0-100% degrees). 
+ abs(reported_motor_position - target_position) and uses the same scale as motor position (0-100% degrees). 
  */
 float finetune_threshold = 1.0;
 
-static const char * direction2txt[3] = { "up", "stopped", "down" };
+// 171 (GEAR RATIO) * (13 + 265.0/360)(revolutions) * 4 (interrupt ticks per revolution)
+#define FYRTUR_ORIGINAL_FULL_LENGTH 9396
 
-static const char * motor_status2txt[4] = { "Stopped", "Moving", "Stalled", "Error" };
+static const char * direction2txt[3] = { "Up", "Stopped", "Down" };
+
+static const char * motor_status2txt[5] = { "Stopped", "Moving", "Stopping", "CalibratingEndPoint", "Error" };
+
+static const char * blinds_status2txt[6] = { "Unknown", "Stopped", "Stopping", "Moving", "MovingInSteps", "Calibrating" }; 
 
 // For more info about the Fyrtur UART protocol, see https://github.com/mjuhanne/fyrtur-motor-board
 static const char cmd_status[2] = { 0xcc, 0xcc };
@@ -102,12 +120,12 @@ static const char cmd_force_down_90[2] = { 0xfa, 0xd2 };
 static const char cmd_force_up_6[2] = { 0xfa, 0xd3 }; // 6 degrees
 static const char cmd_force_down_6[2] = { 0xfa, 0xd4 }; // 6 degrees
 
-static const char cmd_reset[2] = { 0xfa, 0x00 };
-
-// commands supported by custom firmware
+static const char cmd_reset_max_length[2] = { 0xfa, 0x00 };
 static const char cmd_set_max_length[2] = { 0xfa, 0xee };
 static const char cmd_set_full_length[2] = { 0xfa, 0xcc };
 
+// commands supported by custom firmware
+static const char cmd_ext_force_down[2] = { 0xfa, 0xda };
 static const char cmd_ext_location[2] = { 0xcc, 0xd0 };
 static const char cmd_ext_version[2] = { 0xcc, 0xdc };
 static const char cmd_ext_status[2] = { 0xcc, 0xde };
@@ -118,14 +136,24 @@ static const char cmd_ext_set_minimum_voltage[2] = { 0x40, 0x00 };  // second by
 
 static const char cmd_ext_go_to[2] = { 0x10, 0x00 }; // target position is the lower 4 bits of the 1st byte + 2nd byte (12 bits of granularity)
 static const char cmd_ext_set_location[2] = { 0x50, 0x00 }; // location is the lower 4 bits of the 1st byte + 2nd byte (1 sign bit + 11 bits of integer part)
+static const char cmd_ext_set_auto_cal[2] = { 0x60, 0x00 }; 
+static const char cmd_ext_go_to_location[2] = { 0x70, 0x00 }; // location is the lower 4 bits of the 1st byte + 2nd byte (1 sign bit + 11 bits of integer part)
+
+static const char cmd_ext_debug[2] = { 0xcc, 0xd1 };
+static const char cmd_ext_sensor_debug[2] = { 0xcc, 0xd2 };
 
 
 char * blinds_get_version() {
     return version;
 }
 
-bool blinds_is_custom_firmware() {
-    return custom_fw;
+motor_firmware_status_t blinds_get_firmware_status() {
+    return motor_firmware_status;
+}
+
+
+void blinds_set_diagnostics( bool _diagnostics ) {
+    diagnostics = _diagnostics;
 }
 
 int blinds_send_cmd_bytes( uint8_t cmd_byte1, uint8_t cmd_byte2 ) {
@@ -155,14 +183,20 @@ int blinds_generic_msg( blinds_cmd_type cmd ) {
 
 
 void blinds_process_status( int speed, float pos ) {
-    blinds_speed = speed;
-    if (blinds_motor_pos != pos)
-        blinds_motor_position_updated(pos);
-    blinds_motor_pos = pos;
+    if (blinds_speed != speed) {
+        blinds_speed = speed;
+        blinds_variable_updated(BLINDS_SPEED);
+    }
+    if (blinds_motor_pos != pos) {
+        blinds_motor_pos = pos;
+        blinds_variable_updated(BLINDS_POSITION);
+    }
+    int old_status = blinds_status;
+    blinds_direction_t old_direction = blinds_direction;
 
     if (blinds_target_position != -1) {
         if (blinds_status == BLINDS_MOVING) { 
-            if (!custom_fw) {
+            if (motor_firmware_status == ORIGINAL_FW) {
                 int target_pos_integer = blinds_target_position;
                 if (blinds_target_position - (float)target_pos_integer > 0.01) {
                     ESP_LOGW(TAG, "Reaching target! Moving additional %.1f%% by small steps.", blinds_target_position - (float)target_pos_integer );
@@ -174,7 +208,7 @@ void blinds_process_status( int speed, float pos ) {
         } else if (blinds_status == BLINDS_MOVING_STEPS) { 
             if ( ( (blinds_direction == DIRECTION_UP) && (blinds_motor_pos <= blinds_target_position ) ) ||
                  ( (blinds_direction == DIRECTION_DOWN) && (blinds_motor_pos >= blinds_target_position ) ) ) {
-                ESP_LOGW(TAG, "Reached target! Stopped after %.1f stepwise revolutionss..", blinds_revs);
+                ESP_LOGW(TAG, "Reached target! Stopped after %.1f stepwise revolutions..", blinds_revs);
                 blinds_status = BLINDS_STOPPED;
                 blinds_target_position = -1;
                 blinds_revs = 0;
@@ -183,16 +217,16 @@ void blinds_process_status( int speed, float pos ) {
     }
     
     if ( (blinds_status == BLINDS_UNKNOWN) && (blinds_speed>0) ) {
-        ESP_LOGW(TAG, "Blinds automatically resetting...");
-        blinds_status = BLINDS_RESETTING;
+        ESP_LOGW(TAG, "Blinds automatically calibrating...");
+        blinds_status = BLINDS_CALIBRATING;
         polling_interval = DEFAULT_POLLING_INTERVAL;
     } else if ( (blinds_status == BLINDS_UNKNOWN) && (blinds_speed==0) ) {
         ESP_LOGI(TAG, "Blinds are stopped...");
         blinds_status = BLINDS_STOPPED;
         blinds_direction = 0;
-    } else if (blinds_status == BLINDS_RESETTING) {
+    } else if (blinds_status == BLINDS_CALIBRATING) {
         if ( (blinds_speed == 0) && (blinds_motor_pos==0) ) {
-            ESP_LOGI(TAG, "Blinds reset successfully..");
+            ESP_LOGI(TAG, "Blinds calibrated successfully..");
             blinds_status = BLINDS_STOPPED;
             blinds_direction = 0;
             polling_interval = 0;
@@ -209,8 +243,15 @@ void blinds_process_status( int speed, float pos ) {
         blinds_extra_revs = 0;
     }
 
-    ESP_LOGI(TAG,"STATUS:%d, st_bits 0x%x, %1.1fV, SPD %d RPM, POS %1.f, STEPW_REVS %.2f XTRA_REVS %.2f TARGET %.2f", 
-        blinds_status, blinds_battery_status, blinds_voltage, blinds_speed, blinds_motor_pos, 
+    if (blinds_status != old_status) {
+        blinds_variable_updated(BLINDS_STATUS);        
+    }
+    if (blinds_direction != old_direction) {
+        blinds_variable_updated(BLINDS_DIRECTION);        
+    }
+ 
+    ESP_LOGI(TAG,"STATUS:%s, st_bits 0x%x, %1.1fV, SPD %d RPM, POS %1.f, STEPW_REVS %.2f XTRA_REVS %.2f TARGET %.2f", 
+        blinds_status2txt[blinds_status], blinds_battery_status, blinds_voltage, blinds_speed, blinds_motor_pos, 
         blinds_revs, blinds_extra_revs, blinds_target_position );
 }
 
@@ -232,6 +273,10 @@ void blinds_task_read_status_reg( status_register_t status_reg ) {
 	    blinds_send_cmd( cmd_ext_status );
 	else if (status_reg == EXT_LIMIT_STATUS_REG)
 	    blinds_send_cmd( cmd_ext_limits );
+    else if (status_reg == EXT_DEBUG_REG)
+        blinds_send_cmd( cmd_ext_debug );
+    else if (status_reg == EXT_SENSOR_DEBUG_REG)
+        blinds_send_cmd( cmd_ext_sensor_debug );
 }
 
 bool blinds_task_read_status_reg_blocking( status_register_t status_reg, int ms ) {
@@ -311,12 +356,15 @@ int blinds_task_move_step() {
 */
 int blinds_task_move( int direction, float revs, float target_position, bool force_small_steps, bool override_limits  ) {
 	ESP_LOGI(__func__,"Move: dir %d - %.2f revs, target %.2f, force_small_steps %d, force_mov %d", direction, revs, target_position, force_small_steps, override_limits);
-    if ( (revs>0) || force_small_steps || override_limits ||
-    	( (!custom_fw) && (target_position != -1) && (abs(blinds_motor_pos-target_position) < finetune_threshold) ) ) {
+    blinds_direction_t old_direction = blinds_direction;
+    int old_target_pos = blinds_target_position;
+    blinds_status_t old_status = blinds_status;
+    if ( (revs>0) || force_small_steps || ( (motor_firmware_status == ORIGINAL_FW) && override_limits) ||
+    	( (motor_firmware_status == ORIGINAL_FW) && (target_position != -1) && (abs(blinds_motor_pos-target_position) < finetune_threshold) ) ) {
     	// Here we use smaller steps because of the following reasons:
     	//	- we want to turn specific amount of revolutions
     	//	- we want quieter operation (handy with original fw)
-    	//	- we need to move outside lower limit (force-flag)
+    	//	- we need to move outside lower limit (force-flag) when using original firmware
     	//	- we want to finetune position when using original firmware
     	ESP_LOGI(__func__,"Starting stepwise movement");
         blinds_direction = direction;
@@ -334,6 +382,7 @@ int blinds_task_move( int direction, float revs, float target_position, bool for
         } else {        	
         	blinds_target_position = -1; // we don't use motors position as target but move specific amount of revolutions
         }
+        polling_interval = DEFAULT_POLLING_INTERVAL;
         blinds_override_limits = override_limits;
         blinds_force_small_steps = force_small_steps;
         blinds_status = BLINDS_MOVING_STEPS;
@@ -344,7 +393,7 @@ int blinds_task_move( int direction, float revs, float target_position, bool for
     	// continous fast (noisier in default fw) movement
     	if (target_position != -1) {
     		char cmd[2];
-    		if (custom_fw) {
+    		if (motor_firmware_status == CUSTOM_FW) {
     			// extended GO_TO cmd_byte format in bits: CCCCWWWW WWWWDDDD, where CCCC=0xba(13), W denotes whole number part (0-100) and D decimal part of the target position
     			cmd[0] = cmd_ext_go_to[0];
     			uint16_t pos = target_position * 16; // convert float to int
@@ -368,10 +417,15 @@ int blinds_task_move( int direction, float revs, float target_position, bool for
 	                return 0;
 	            }
 	        } else {
-	            blinds_send_cmd( cmd_down );            
-	            blinds_direction = DIRECTION_DOWN;
-	            blinds_target_position = 100;
-	        }
+                if ( (motor_firmware_status == CUSTOM_FW) && (override_limits) ) {
+                    blinds_send_cmd( cmd_ext_force_down );            
+                    blinds_target_position = 110;   // just so that we don't stop the movement before down button is released
+                } else {
+    	            blinds_send_cmd( cmd_down );            
+    	            blinds_target_position = 100;
+    	        }
+                blinds_direction = DIRECTION_DOWN;
+            }
 	    }
         polling_interval = DEFAULT_POLLING_INTERVAL;
         blinds_status = BLINDS_MOVING;
@@ -379,6 +433,17 @@ int blinds_task_move( int direction, float revs, float target_position, bool for
         blinds_override_limits = false;
         last_move_cmd_timestamp = iot_timestamp();
     }
+
+    if (blinds_status != old_status) {
+        blinds_variable_updated(BLINDS_STATUS);        
+    }
+    if (blinds_direction != old_direction) {
+        blinds_variable_updated(BLINDS_DIRECTION);        
+    }
+    if (blinds_target_position != old_target_pos) {
+        blinds_variable_updated(BLINDS_TARGET_POSITION);        
+    }
+
     return 1;
 }
 
@@ -427,7 +492,8 @@ int blinds_go_to( float position, bool force_small_steps ) {
 }
 
 int blinds_task_set_location( int location ) {
-    char cmd[2];    
+    char cmd[2];
+    location = location >> 1;  // There is only room for 12 bits of data, so we omit 1 least-significant bit
     cmd[0] = cmd_ext_set_location[0];
     cmd[0] |= ( (location>>8) & 0xf);  // upper 4 bits
     cmd[1] = location & 0xff;  // lower 8 bits
@@ -440,7 +506,31 @@ int blinds_set_location( int location ) {
     blinds_msg msg;
     if (blinds_queue != NULL) {
         msg.cmd = blinds_cmd_set_location;
-        msg.position = location;
+        msg.location = location;
+        if( xQueueSend( blinds_queue, ( void * ) &msg, ( TickType_t ) 10) != pdPASS ) {
+            ESP_LOGE(TAG,"error queueing blinds msg!");
+            return 0;
+            }
+     }
+     return 1;
+}
+
+int blinds_task_go_to_location( int location ) {
+    char cmd[2];    
+    location = location >> 1;  // There is only room for 12 bits of data, so we omit 1 least-significant bit
+    cmd[0] = cmd_ext_go_to_location[0];
+    cmd[0] |= ( (location>>8) & 0xf);  // upper 4 bits
+    cmd[1] = location & 0xff;  // lower 8 bits
+    blinds_send_cmd( cmd );
+    return 1;
+}
+
+
+int blinds_go_to_location( int location ) {
+    blinds_msg msg;
+    if (blinds_queue != NULL) {
+        msg.cmd = blinds_cmd_go_to_location;
+        msg.location = location;
         if( xQueueSend( blinds_queue, ( void * ) &msg, ( TickType_t ) 10) != pdPASS ) {
             ESP_LOGE(TAG,"error queueing blinds msg!");
             return 0;
@@ -465,27 +555,35 @@ int blinds_stop() {
 }
 
 
-int blinds_task_reset() {
-    ESP_LOGI(TAG,"Resetting position and maximum blind length..");
-    blinds_send_cmd( cmd_reset );
+int blinds_task_reset_max_length() {
+    ESP_LOGI(TAG,"Reset maximum blind length and calibrate..");
+    blinds_send_cmd( cmd_reset_max_length );
     // delay until motor has settled
-    vTaskDelay(3000 / portTICK_PERIOD_MS);
-    blinds_task_read_status_reg_blocking(STATUS_REG_1, 500);
+    vTaskDelay(200 / portTICK_PERIOD_MS);
+    int i=0;
+    while ( (blinds_motor_pos != 0x32) && (i<10) ) {
+        blinds_task_read_status_reg_blocking(STATUS_REG_1, 500);
+        i++;
+    }
     if (blinds_motor_pos == 0x32) {
-        ESP_LOGI(TAG,"Blinds have been reset. Winding up until hard stop..");
+        ESP_LOGI(TAG,"Maximum curtain length reseted. Doing the calibration now by winding up the curtain..");
         blinds_task_move(DIRECTION_UP, -1, -1, false, false);
-        blinds_status = BLINDS_RESETTING;
+        blinds_status = BLINDS_CALIBRATING;
+
+        if (motor_firmware_status == CUSTOM_FW) {
+            // read back the max length
+            blinds_task_read_status_reg(EXT_LIMIT_STATUS_REG);
+        }
     } else {
-        ESP_LOGE(TAG,"Blinds have NOT been reset (position %.2f != 50!)", blinds_motor_pos);
+        ESP_LOGE(TAG,"Maximum length reset unsuccessful! (position %.2f != 50!)", blinds_motor_pos);
         blinds_status = BLINDS_STOPPED;
     }
     return 1;
 }
 
-int blinds_reset() {
-	return blinds_generic_msg(blinds_cmd_reset);
+int blinds_reset_max_length() {
+	return blinds_generic_msg(blinds_cmd_reset_max_length);
 }
-
 
 int blinds_task_set_max_length() {
     ESP_LOGI(TAG,"Setting maximum curtain length..");
@@ -497,6 +595,10 @@ int blinds_task_set_max_length() {
         ESP_LOGI(TAG,"Maximum curtain length has been set to current position.");
     } else {
         ESP_LOGE(TAG,"Error setting maximum curtain length (position %.2f != 100!)", blinds_motor_pos);
+    }
+    if (motor_firmware_status == CUSTOM_FW) {
+        // read back the max length
+        blinds_task_read_status_reg(EXT_LIMIT_STATUS_REG);
     }
     return 1;
 }
@@ -516,12 +618,43 @@ int blinds_task_set_full_length() {
     } else {
         ESP_LOGE(TAG,"Error full curtain length (position %.2f != 100!)", blinds_motor_pos);
     }
+    if (motor_firmware_status == CUSTOM_FW) {
+        // read back the max and full lengths
+        blinds_task_read_status_reg(EXT_LIMIT_STATUS_REG);
+    }
     return 1;
 }
 
 int blinds_set_full_length() {
 	return blinds_generic_msg(blinds_cmd_set_full_length);
 }
+
+int blinds_task_reset_full_length() {
+    if (blinds_get_firmware_status() == CUSTOM_FW) {
+        ESP_LOGI(TAG,"Reset to FULL blind length and then calibrate..");
+
+        // Set current location to original full length..
+        blinds_task_set_location(FYRTUR_ORIGINAL_FULL_LENGTH);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+
+        // .. then set current location as the full curtain length
+        blinds_task_set_full_length();
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+
+        // Then reset max length and do the calibration
+        blinds_task_reset_max_length();
+
+    } else {
+        ESP_LOGI(TAG,"Cannot reset FULL blind length with original firmware! Doing only max length reset");
+        blinds_task_reset_max_length();
+    }
+    return 1;
+}
+
+int blinds_reset_full_length() {
+    return blinds_generic_msg(blinds_cmd_reset_full_length);
+}
+
 
 int blinds_read_status_reg( status_register_t status_reg ) {
     blinds_msg msg;
@@ -554,17 +687,18 @@ int blinds_send_raw( uint8_t cmd_byte1, uint8_t cmd_byte2 ) {
      return 1;	
 }
 
-int blinds_task_set_speed(float speed) {
+int blinds_task_set_speed(int speed) {
 	char cmd[2];
-	if (custom_fw) {
+	if (motor_firmware_status == CUSTOM_FW) {
+        blinds_target_speed = speed;
 		cmd[0] = cmd_ext_set_speed[0];
 		cmd[1] = (uint8_t)speed;
-        blinds_send_cmd( cmd );	
+        blinds_send_cmd( cmd );
     }
     return 1;
 }
 
-int blinds_set_speed(float speed) {
+int blinds_set_speed(int speed) {
     blinds_msg msg;
     if (blinds_queue != NULL) {
     	msg.cmd = blinds_cmd_set_speed;
@@ -577,9 +711,9 @@ int blinds_set_speed(float speed) {
      return 1;	
 }
 
-int blinds_task_set_default_speed(float speed) {
+int blinds_task_set_default_speed(int speed) {
     char cmd[2];
-    if (custom_fw) {
+    if (motor_firmware_status == CUSTOM_FW) {
         cmd[0] = cmd_ext_set_default_speed[0];
         cmd[1] = (uint8_t)speed;
         blinds_send_cmd( cmd ); 
@@ -587,7 +721,7 @@ int blinds_task_set_default_speed(float speed) {
     return 1;
 }
 
-int blinds_set_default_speed(float speed) {
+int blinds_set_default_speed(int speed) {
     blinds_msg msg;
     if (blinds_queue != NULL) {
         msg.cmd = blinds_cmd_set_default_speed;
@@ -602,7 +736,7 @@ int blinds_set_default_speed(float speed) {
 
 int blinds_task_set_minimum_voltage(float voltage) {
     char cmd[2];
-    if (custom_fw) {
+    if (motor_firmware_status == CUSTOM_FW) {
         cmd[0] = cmd_ext_set_minimum_voltage[0];
         cmd[1] = (uint8_t)(voltage*16);
         blinds_send_cmd( cmd ); 
@@ -623,12 +757,68 @@ int blinds_set_minimum_voltage(float voltage) {
      return 1;  
 }
 
+int blinds_task_set_auto_cal(bool enabled) {
+    char cmd[2];
+    if (motor_firmware_status == CUSTOM_FW) {
+        cmd[0] = cmd_ext_set_auto_cal[0];
+        cmd[1] = enabled;
+        blinds_send_cmd( cmd ); 
+    }
+    return 1;
+}
+
+int blinds_set_auto_cal(bool enabled) {
+    blinds_msg msg;
+    if (blinds_queue != NULL) {
+        msg.cmd = blinds_cmd_set_auto_cal;
+        msg.location = enabled;
+        if( xQueueSend( blinds_queue, ( void * ) &msg, ( TickType_t ) 10) != pdPASS ) {
+            ESP_LOGE(TAG,"error queueing blinds msg!");
+            return 0;
+            }
+     }
+     return 1;  
+}
+
+
 int blinds_get_speed() {
 	return blinds_speed;
 }
 
-float blinds_get_pos() {
+int blinds_get_target_speed() {
+    return blinds_target_speed;
+}
+
+float blinds_get_position() {
 	return blinds_motor_pos;
+}
+
+float blinds_get_voltage() {
+    return blinds_voltage;
+}
+
+int blinds_get_full_length() {
+    return blinds_full_length;
+}
+
+int blinds_get_max_length() {
+    return blinds_max_length;
+}
+
+int blinds_get_location() {
+    return blinds_location;
+}
+
+int blinds_get_target_location() {
+    return blinds_target_location;
+}
+
+const char * blinds_get_motor_status_str() {
+    return (blinds_motor_status <= 4 ? motor_status2txt[blinds_motor_status] : "ERR");
+}
+
+int blinds_get_calibration_status() {
+    return blinds_calibrating;
 }
 
 blinds_status_t blinds_get_status() {
@@ -639,20 +829,46 @@ blinds_direction_t blinds_get_direction() {
     return blinds_direction;
 }
 
+const char * blinds_get_status_str() {
+    return blinds_status2txt[blinds_status];
+}
+const char * blinds_get_direction_str() {
+    return direction2txt[blinds_direction + 1];
+}
 
+int blinds_get_target_position() {
+    return blinds_target_position;
+}
 
-
-extern int uart_read( uint8_t * rx_buffer, int bytes, int timeout );
 
 void blinds_process_status_reg_1( int battery_status, int voltage, int speed, int pos ) {
     blinds_battery_status = battery_status;
-    blinds_voltage = voltage/30;
-    blinds_process_status( speed, pos );
+    float f_voltage = voltage/30;
+    if (blinds_voltage != f_voltage) {
+        blinds_voltage = f_voltage;
+        blinds_variable_updated(BLINDS_VOLTAGE);
+    }
+
+    blinds_process_status( speed, pos );    // speed and position will be processed separately
     last_status_timestamps[STATUS_REG_1] = iot_timestamp();
 }
 
-void blinds_process_limit_status_reg( int resetting, int max_length, int full_length ) {
-	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: resetting: %d, max_length %d, full_length %d", resetting, max_length, full_length );
+
+void blinds_process_limit_status_reg( int calibrating, int max_length, int full_length ) {
+	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: calibrating: %d, max_length %d, full_length %d", calibrating, max_length, full_length );
+    if (blinds_calibrating != calibrating) {
+        blinds_calibrating = calibrating;   
+        blinds_variable_updated(BLINDS_CALIBRATING);     
+    }
+    if (blinds_max_length != max_length) {
+        blinds_max_length = max_length;
+        blinds_variable_updated(BLINDS_MAX_LEN);
+    }
+    if (blinds_full_length != full_length) {
+        blinds_full_length = full_length;
+        blinds_variable_updated(BLINDS_FULL_LEN);
+    }
+
 	last_status_timestamps[EXT_LIMIT_STATUS_REG] = iot_timestamp();
 }
 
@@ -662,19 +878,35 @@ void blinds_process_limit_status_reg( int resetting, int max_length, int full_le
  */
 void blinds_process_ext_status_reg( int status, int current, int speed, float position) {
 	ESP_LOGI(UART_TAG,"EXT_STAT: status: %s, current %d, speed %d, position %.2f", 
-        status <= 3 ? motor_status2txt[status] : "ERR", current, speed, position);
-    blinds_process_status( speed, position );
+        blinds_get_motor_status_str(), current, speed, position);
+
+    blinds_process_status( speed, position );   // speed and position will be processed separately
+
+    if (blinds_motor_status != status) {
+        blinds_motor_status = status;
+        blinds_variable_updated(BLINDS_MOTOR_STATUS);
+    }
 	last_status_timestamps[EXT_STATUS_REG] = iot_timestamp();
 }
 
 void blinds_process_ext_location_reg( int location, int target_location ) {
     ESP_LOGI(UART_TAG,"EXT_LOCATION: loc %d, target_loc %d", location, target_location);
     last_status_timestamps[EXT_LOCATION_REG] = iot_timestamp();
+    if (blinds_location != location) {
+        blinds_location = location;
+        blinds_variable_updated(BLINDS_LOCATION);
+    }
+    if (blinds_target_location != target_location) {
+        blinds_target_location = target_location;
+        blinds_variable_updated(BLINDS_TARGET_LOCATION);
+    }
 }
 
-void blinds_process_ext_version_reg( int version_major, int version_minor, int voltage_check ) {
-    ESP_LOGI(UART_TAG,"VERSION: version %d.%d. Minimum voltage: %.2f", version_major, version_minor, (float)voltage_check/16);
+void blinds_process_ext_version_reg( int version_major, int version_minor, int voltage_check, int default_speed ) {
+    ESP_LOGI(UART_TAG,"VERSION: version %d.%d. Minimum voltage: %.2f. Default speed %d", 
+        version_major, version_minor, (float)voltage_check/16, default_speed);
     snprintf(version, MAX_VERSION_LENGTH, "%d.%d", version_major, version_minor);
+    blinds_default_speed = default_speed;
     last_status_timestamps[EXT_VERSION_REG] = iot_timestamp();
 }
 
@@ -780,7 +1012,7 @@ void blinds_uart_task(void *pvParameter) {
                 } else {
                     checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
                     if (checksum == data[7]) {
-                        blinds_process_ext_version_reg( data[3], data[4], data[5] );
+                        blinds_process_ext_version_reg( data[3], data[4], data[5], data[6] );
                         packet_state = PACKET_VALID;
                     } else {
                         packet_state = PACKET_INVALID;
@@ -794,6 +1026,32 @@ void blinds_uart_task(void *pvParameter) {
                     checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
                     if (checksum == data[7]) {
                         blinds_process_ext_location_reg( data[3]*256 + data[4], data[5]*256 + data[6]  );
+                        packet_state = PACKET_VALID;
+                    } else {
+                        packet_state = PACKET_INVALID;
+                    }
+                }
+            } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd2) ) {
+                // DEBUG BYTES
+                if (totRxBytes != 9) {
+                    expectedBytes = 9;
+                } else {
+                    checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+                    if (checksum == data[8]) {
+                        ESP_LOGW(UART_TAG,"debug bytes: unused %d, dir_error %d, cal %d, stopped_ticks %d, unused %d ",  data[3], data[4], data[5], data[6], data[7]);
+                        packet_state = PACKET_VALID;
+                    } else {
+                        packet_state = PACKET_INVALID;
+                    }
+                }
+            } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd3) ) {
+                // SENSOR DEBUG BYTES
+                if (totRxBytes != 9) {
+                    expectedBytes = 9;
+                } else {
+                    checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+                    if (checksum == data[8]) {
+                        ESP_LOGW(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
                         packet_state = PACKET_VALID;
                     } else {
                         packet_state = PACKET_INVALID;
@@ -919,8 +1177,8 @@ void blinds_task(void *pvParameter) {
 	            		}
         	    		break;
             		case blinds_cmd_set_speed: {
-            				if (custom_fw) {
-	    	        			ESP_LOGI(TAG,"Setting speed to %.1f rpm", msg.speed);
+            				if (motor_firmware_status == CUSTOM_FW) {
+	    	        			ESP_LOGI(TAG,"Setting speed to %d rpm", msg.speed);
     		        			blinds_task_set_speed(msg.speed);
             				} else {
 	    	        			ESP_LOGE(TAG,"Setting speed not supported on original firmware!");            					
@@ -928,8 +1186,8 @@ void blinds_task(void *pvParameter) {
 	            		}
         	    		break;
                     case blinds_cmd_set_default_speed: {
-                            if (custom_fw) {
-                                ESP_LOGI(TAG,"Setting default speed to %.1f rpm", msg.speed);
+                            if (motor_firmware_status == CUSTOM_FW) {
+                                ESP_LOGI(TAG,"Setting default speed to %d rpm", msg.speed);
                                 blinds_task_set_default_speed(msg.speed);
                             } else {
                                 ESP_LOGE(TAG,"Setting defaut speed not supported on original firmware!");                              
@@ -941,14 +1199,19 @@ void blinds_task(void *pvParameter) {
             				blinds_task_stop();
             			}
             			break;
-            		case blinds_cmd_reset: {
-           	 				ESP_LOGI(TAG,"Reset");
-           	 				blinds_task_reset();
+            		case blinds_cmd_reset_max_length: {
+           	 				ESP_LOGI(TAG,"Reset max curtain length");
+           	 				blinds_task_reset_max_length();
             			}
             			break;
                     case blinds_cmd_set_location: {
-                            ESP_LOGI(TAG,"Set location to %.0f", msg.position);
-                            blinds_task_set_location(msg.position);
+                            ESP_LOGI(TAG,"Set location to %d", msg.location);
+                            blinds_task_set_location(msg.location);
+                        }
+                        break;
+                    case blinds_cmd_go_to_location: {
+                            ESP_LOGI(TAG,"Go to location to %d", msg.location);
+                            blinds_task_go_to_location(msg.location);
                         }
                         break;
             		case blinds_cmd_set_max_length: {
@@ -961,6 +1224,11 @@ void blinds_task(void *pvParameter) {
 	            			blinds_task_set_full_length();
             			}
             			break;
+                    case blinds_cmd_reset_full_length: {
+                            ESP_LOGI(TAG,"Reset full and max curtain lengths");
+                            blinds_task_reset_full_length();
+                        }
+                        break;
             		case blinds_cmd_status: {
             				ESP_LOGI(TAG,"Read status reg %d", (int)msg.position);
 	            			blinds_task_read_status_reg(msg.position);
@@ -972,7 +1240,7 @@ void blinds_task(void *pvParameter) {
 	            		}
         	    		break;
                     case blinds_cmd_set_minimum_voltage: {
-                            if (custom_fw) {
+                            if (motor_firmware_status == CUSTOM_FW) {
                                 ESP_LOGI(TAG,"Setting minimum voltage to %.1f rpm", msg.position);
                                 blinds_task_set_minimum_voltage(msg.position);
                             } else {
@@ -993,8 +1261,11 @@ void blinds_task(void *pvParameter) {
 
 	        if ( (polling_interval) && (blinds_status != BLINDS_STOPPED) && (iot_timestamp() - last_poll_timestamp  > polling_interval)) {
                 last_poll_timestamp = iot_timestamp();
-                if (custom_fw) {
+                if (motor_firmware_status == CUSTOM_FW) {
                     blinds_task_read_status_reg(EXT_STATUS_REG);
+                    if (diagnostics) {
+                        blinds_task_read_status_reg(EXT_LOCATION_REG);
+                    }
                 } else {
                     blinds_task_read_status_reg(STATUS_REG_1);                    
                 }
@@ -1036,14 +1307,16 @@ void blinds_init() {
             blinds_task_read_status_reg_blocking(EXT_VERSION_REG, 1000);
             blinds_task_read_status_reg_blocking(EXT_LIMIT_STATUS_REG, 1000);
 
-            custom_fw = true;
+            motor_firmware_status = CUSTOM_FW;
         } else {
             ESP_LOGI(TAG,"Original Fyrtur motor firmware detected");
+            motor_firmware_status = ORIGINAL_FW;
         }
 
 
     } else {
         ESP_LOGE(TAG,"Fyrtur motor not connected!");
+        motor_firmware_status = MOTOR_NOT_DETECTED;
     }
 
 }

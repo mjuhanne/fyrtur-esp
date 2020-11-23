@@ -73,7 +73,7 @@ The port may vary depending on the operating system and the ESP32 variant you ha
 #### Configuration
 Fyrtur module will create an Access Point with a custom web portal which can be used to configure the home network WiFi AP well as the MQTT server. The AP name is "Fyrtur-xxxxxx", where xxxxxx is the last 6 digits of ESP32 WiFi module MAC address. This variation is done because we want to distinguish one Fyrtur node from another. Password to the AP is by default 'esp32pwd' but that can be configured via menuconfig. 
 Connect to the AP and access http server at *10.10.0.1*. Use the interface to first connect to the target Access Point and then configure the MQTT server.
-The Fyrtur Access Point will shutdown after 1 minute of successful configuration. AP can be restarted via MQTT interface or via factory reset (see below).
+The Fyrtur Access Point will shutdown after 1 minute of successful configuration. AP can be restarted via MQTT interface, pressing UP and DOWN buttons for > 2 seconds, or by doing factory reset (see below).
 
 
 ## Usage
@@ -85,19 +85,24 @@ Fyrtur curtains can then be controlled manually by using the buttons or via MQTT
 
 * UP/DOWN BUTTONS:  
 		Single click: Starts rolling blinds up/down if they are stopped. Otherwise stops movement.  LED will blink once.
-		Double click: Set lower curtain limit to the current position (curtains must be stopped first). LED will blink twice.
+		Double click: 
+			- Set lower curtain limit to the current position (curtains must be stopped first). LED will blink twice.
+			- If curtains are at top position, lower curtain limit will be reset to the full length. LED will blink three times.
 
-* UP BUTTON held down for 5 seconds: Restart WiFi access point
-
-* DOWN BUTTON held down for 5 seconds: Boot ESP module
+* UP or DOWN BUTTON held down for 1 second: Continous slow movement up/down overriding the previously set max/full curtain length limits.
+		- Setting the custom speed is not possible in original motor firmware. Movement will be done in small steps instead.
 
 * BOTH buttons held down:
-	* 2000 milliseconds : reset "soft" lower blinds limit. LEDs will blink three times. Please release buttons at this stage. If buttons are held longer, this function will be skipped and functions below are selected instead
+	* 2000 milliseconds : restart Wireless Access point
 	* 3500 ms : led starts blinking, warning about imminent factory reset
-	* 6000 ms :  Factory reset:
-			- Variables are reset to default values
-			- WiFi station and MQTT server are disconnected and their configuration is deleted
-			- Access Point is restarted in order to re-configure WiFi AP and MQTT server
+	* 6000 ms : do a factory reset:
+			- LED will stay on
+			- ESP's Non-volatile memory is formatted so variables are reset to default values (WiFI and MQTT server settings are removed)
+			- Fyrtur motor module variables are also reset to default values
+			- User defined (maximum) curtain length is reset to full length and curtains will start calibration procedure by rolling them up
+			- If FULL curtain length has been modified, it will also be reseted to the original value (13 revolutions + 265 degrees) if motor module has a custom firmware installed. Note that with original firmware this cannot be done in software but curtains will have to be rolled to correct position with overriding move commands manually and then *set_full_len* command be executed either via MQTT interface or via console.
+			- ESP module is reset
+			- Wireless Access Point is restarted in order to re-configure WiFi AP and MQTT server
 
 ### LED signaling
 - no blinking: in standby
@@ -124,18 +129,18 @@ Fyrtur curtains can then be controlled manually by using the buttons or via MQTT
 - `/home/control/fyrtur-e975c1/command`
 	- Payload: OPEN / CLOSE / STOP
 	- OPEN and CLOSE commands respects the (maximum) curtain length and thus stops when upper/lower limit is reached.
-- `/home/control/fyrtur-e975c1/set_position`
+- `/home/control/fyrtur-e975c1/set/target_position`
 	- Payload: Number between 0 (closed) and 1000 (open)
 	- Lower/raise the curtain to the desired position
 - `/home/control/fyrtur-e975c1/force_move_up`
 - `/home/control/fyrtur-e975c1/force_move_down`
 	- Payload: Number of curtain rod revolutions to move
-	- Force movement outside the (maximum) curtain length.
+	- Force movement outside the (maximum or full) curtain length.
 - `/home/control/fyrtur-e975c1/reset`
-	- Reset the current (user defined) maximum curtain length to full (factory defined) curtain length and start rewinding curtains to upmost position.
-- `/home/control/fyrtur-e975c1/set_max_len`
+	- Reset the current (user defined) maximum curtain length to full (factory defined) curtain length and start calibration process by rewinding curtains to topmost position.
+- `/home/control/fyrtur-e975c1/set/max_len`
 	- Set the maximum (user defined) curtain length to current position
-- `/home/control/fyrtur-e975c1/set_full_len`
+- `/home/control/fyrtur-e975c1/set/full_len`
 	- Set the full (factory defined) curtain length to current position. 
 
 For more information about the maximum/full curtain lenghts and curtain position calibration, the best source is currently the [custom Fyrtur motor module firmware documentation](https://github.com/mjuhanne/fyrtur-motor-board) 

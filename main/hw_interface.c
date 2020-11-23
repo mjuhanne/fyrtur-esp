@@ -9,6 +9,7 @@
 
 #include "hw_interface.h"
 #include "node-framework.h"
+#include "wifi_manager.h"
 #include "blinds.h"
 #ifdef NODE_USES_NEOPIXEL
 #include "ws2812.h"
@@ -17,6 +18,8 @@
 static const char * TAG = "INTERFACE";
 
 TaskHandle_t sensor_task;
+
+int saved_target_speed;
 
 #define GPIO_SENSORS_PIN_SEL ( \
     (1ULL<<BTN1_GPIO) | \
@@ -43,7 +46,7 @@ typedef enum {
     NO_DOUBLE_BTN_PRESS = 0,
     OTHER_BTN_RELEASED,
     NO_FUNCTION,
-    RESET_LIMITS,
+    START_AP,
     FACTORY_RESET_IMMINENT,
     FACTORY_RESET
 } double_btn_stage_t;
@@ -75,8 +78,41 @@ void handle_single_btn_click( int button ) {
 }
 
 void handle_long_btn_press( int button ) {
-    // TODO
+
+    if (blinds_get_status() == BLINDS_STOPPED) {
+        if (blinds_get_firmware_status() == ORIGINAL_FW) {
+            // unrestricted movement but with small steps
+            if (button==BTN_1) {
+                blinds_move(DIRECTION_UP, -1, true, true);
+            } else if (button==BTN_2) {
+                blinds_move(DIRECTION_DOWN, -1, true, true);
+            }
+        } else {
+            // unrestricted movement but with lower speed
+            saved_target_speed = blinds_get_target_speed();
+            blinds_set_speed(SLOW_MOVEMENT_SPEED);
+            if (button==BTN_1) {
+                blinds_move(DIRECTION_UP, -1, false, true);
+            } else if (button==BTN_2) {
+                blinds_move(DIRECTION_DOWN, -1, false, true);
+            }
+        }
+    } else {
+        // stop otherwise
+        blinds_stop();
+    }
 }
+
+void handle_long_btn_release( int button ) {
+    // stop movement
+    blinds_stop();
+
+    if (blinds_get_firmware_status() == CUSTOM_FW) {
+        // restore the original speed
+        blinds_set_speed(saved_target_speed);
+    }
+}
+
 
 void check_single_click() {
     for (int i=0;i<MAX_BUTTONS;i++) {
@@ -115,10 +151,19 @@ bool check_double_click( int button ) {
         // this button has been double click
         ESP_LOGI(TAG, "Double click (btn %d)", button+1);
 
-        // double click of either of the buttons causes SET_SOFT_LOWER_LIMIT
-        IOT_SET_LIMITS_LED();
-        
-        blinds_set_max_length();
+        if (blinds_get_position() != 0) {
+            // double click of either of the buttons causes SET_SOFT_LOWER_LIMIT when curtains are below top position
+            IOT_SET_LIMITS_LED();
+            
+            blinds_set_max_length();            
+        } else {
+            // double click while curtains at top position -> reset maximum length
+            ESP_LOGW(TAG,"Reset maximum length and calibrate");
+            
+            blinds_reset_max_length();
+
+            IOT_RESET_LIMITS_LED();
+        }
 
         last_short_click_timestamps[button] = 0;
         return 1;
@@ -133,15 +178,7 @@ bool check_double_click( int button ) {
  */
 
 void check_double_btn_released() {
-    if (double_btn_stage == RESET_LIMITS) {
-        // Buttons have been pressed long enough to invoke "RESET LIMITS" but before "FACTORY_RESET_IMMINENT" is reached, 
-        // and now the button(s) have been released, so we actually invoke the RESET_LIMITS
-        ESP_LOGW(TAG,"Reset blinds limits!");
-        
-        blinds_reset();
-
-        IOT_RESET_LIMITS_LED();
-    } else if (double_btn_stage == FACTORY_RESET_IMMINENT) {
+    if (double_btn_stage == FACTORY_RESET_IMMINENT) {
         // factory reset was canceled. stop the blinking led
         IOT_LED_OFF();
     }
@@ -157,9 +194,9 @@ void check_double_btn_kept_pressed() {
         if ( (iot_timestamp()-btn_timestamps[BTN_1] > FACTORY_RESET_THRESHOLD)
             && (iot_timestamp()-btn_timestamps[BTN_2] > FACTORY_RESET_THRESHOLD) ) {
             if (double_btn_stage != FACTORY_RESET) {
-                //FIXME iot_factory_reset();
+                IOT_FACTORY_RESET_LED();
+                iot_factory_reset();
                 double_btn_stage = FACTORY_RESET;
-                IOT_UNCONFIGURED_LED();
             }
         } else if ( (iot_timestamp()-btn_timestamps[BTN_1] > FACTORY_RESET_IMMINENT_THRESHOLD)
             && (iot_timestamp()-btn_timestamps[BTN_2] > FACTORY_RESET_IMMINENT_THRESHOLD) ) {
@@ -168,14 +205,14 @@ void check_double_btn_kept_pressed() {
                 double_btn_stage = FACTORY_RESET_IMMINENT;
                 IOT_FACTORY_RESET_IMMINENT_LED();
             }
-        } else if ( (iot_timestamp()-btn_timestamps[BTN_1] > RESET_LIMITS_THRESHOLD)
-            && (iot_timestamp()-btn_timestamps[BTN_2] > RESET_LIMITS_THRESHOLD) ) {
-            if (double_btn_stage != RESET_LIMITS) {
-                ESP_LOGW(TAG,"Reset blinds limit reached");
-                double_btn_stage = RESET_LIMITS;
-                // Here we just inform with LEDs that limit is reached. Only if buttons are released, the actual reset is done. Otherwise
-                // no action is done and we wait if user wants to wait more to select FACTORY RESET
-                IOT_RESET_LIMITS_LED();
+        } else if ( (iot_timestamp()-btn_timestamps[BTN_1] > START_AP_THRESHOLD)
+            && (iot_timestamp()-btn_timestamps[BTN_2] > START_AP_THRESHOLD) ) {
+            if (double_btn_stage != START_AP) {
+                ESP_LOGW(TAG,"Start AP");
+                wifi_manager_set_auto_ap_shutdown(false);
+                wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+                double_btn_stage = START_AP;
+                IOT_START_AP_LED();
             }
         } else {
             // both buttons are pressed but not yet long enough
@@ -207,7 +244,8 @@ void handle_btn_int( int btn, int status) {
 
                 if (btn_timestamps[btn] == 0) {
                     // a button was released but the timestamp has been cleared already. 
-                    // This was a release of a single button long press, but it was handled already elsewhere. Ignore it.
+                    // This was a release of a single button long press.
+                    handle_long_btn_release(btn);
                 } else {                    
                     // this was a short click. Check if another single click was done previously (so it's a double click)
                     if (!check_double_click(btn)) {

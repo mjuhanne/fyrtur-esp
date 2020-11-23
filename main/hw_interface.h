@@ -4,20 +4,21 @@
 
 	UP/DOWN BUTTONS:  
 		Single click: Starts rolling blinds up/down if they are stopped. Otherwise stops movement. LED will blink once.
-		Double click: Set lower curtain limit to the current position (curtains must be stopped first). LED will blink twice.
+		Double click: 
+			- Set lower curtain limit to the current position (curtains must be stopped first). LED will blink twice.
+			- If curtains are at top position, lower curtain limit will be reset to the full length. LED will blink three times.
 
-	UP BUTTON held down for 5 seconds: Start WiFi access point
-
-	DOWN BUTTON held down for 5 seconds: Boot ESP module
+	UP or DOWN BUTTON held down for 1 second: Continous slow movement up/down overriding the previously set max/full curtain length limits.
+		- Setting the custom speed is not possible in original motor firmware. Movement will be done in small steps instead.
 
 	Both buttons are held down:
-		2000 milliseconds : reset "soft" lower blinds limit. Leds will blink three times. Please release buttons at this stage.
-			If buttons are held longer, this function will be skipped and functions below are selected instead
+		2000 milliseconds : start Wireless Access point
 		3500 ms : led starts blinking, warning about imminent factory reset
 		6000 ms : do a factory reset:
-			- Variables are reset to default values
-			- WiFi station and MQTT server are disconnected and their configuration is forgotten
-			- Access Point is restarted in order to re-configure WiFi and MQTT 
+			- LED will stay on
+			- NVS partition is formatted and Variables are reset to default values
+			- ESP module is reseted
+			- Wireless Access Point is restarted in order to re-configure WiFi and MQTT 
 
 	LED: 
 		- no blinking: in standby
@@ -37,25 +38,29 @@
 
 #define STATUS_LED 0
 
+#define SLOW_MOVEMENT_SPEED	6	// in rpm
+
 // --- Variables for handling keeping both buttons pressed
-#define RESET_LIMITS_THRESHOLD           2000
+#define START_AP_THRESHOLD           2000
 #define FACTORY_RESET_IMMINENT_THRESHOLD 3500
 #define FACTORY_RESET_THRESHOLD          5000
 
 #define DOUBLE_CLICK_PERIOD 500 // milliseconds. Two button clicks during this period of time is considered as double-click
-#define LONG_PRESS_PERIOD 5000 // milliseconds. A button press longer than this is considered as a long press
+#define LONG_PRESS_PERIOD 1000 // milliseconds. A button press longer than this is considered as a long press
 
 #define WIFI_LED_PRIORITY 0
 #define MQTT_LED_PRIORITY 0
 #define OTA_LED_PRIORITY 10
+#define FACTORY_RESET_LED_PRIORITY 20
 #define RESET_LED_PRIORITY 5
 #define BTN_LED_PRIORITY 0
 #define NORMAL_LED_PRIORITY 0
 
 #define IOT_BTN_LED_COLOR 50,50,50
 #define IOT_WIFI_LED_COLOR 0,0,30
-#define IOT_MQTT_LED_COLOR 30,30,0
+#define IOT_MQTT_LED_COLOR 30,0,30
 #define IOT_OTA_LED_COLOR 30,0,0
+#define IOT_FACTORY_RESET_LED_COLOR 0,30,0
 
 
 #define IOT_UNCONFIGURED_LED() iot_led_pulse(STATUS_LED, IOT_WIFI_LED_COLOR, 1000, 1000, -1, NORMAL_LED_PRIORITY);
@@ -67,9 +72,12 @@
 #define IOT_MQTT_DISCONNECTED_LED() iot_led_burst(STATUS_LED, IOT_MQTT_LED_COLOR, 50, 300, 3, -1, 1000, MQTT_LED_PRIORITY);
 
 #define IOT_LED_OFF() iot_led_set(STATUS_LED, 0, 0, 0);
-#define IOT_LED_ON() iot_led_set(STATUS_LED, 0, 0, 0);
+#define IOT_LED_ON() iot_led_set(STATUS_LED, 50, 0, 0);
 
-#define IOT_FACTORY_RESET_IMMINENT_LED() iot_led_pulse(STATUS_LED, IOT_BTN_LED_COLOR, 50, 50, -1, NORMAL_LED_PRIORITY );
+#define IOT_FACTORY_RESET_LED() iot_led_set_priority(STATUS_LED, IOT_FACTORY_RESET_LED_COLOR, FACTORY_RESET_LED_PRIORITY);
+#define IOT_FACTORY_RESET_IMMINENT_LED() iot_led_pulse(STATUS_LED, IOT_FACTORY_RESET_LED_COLOR, 50, 50, -1, FACTORY_RESET_LED_PRIORITY );
+
+#define IOT_START_AP_LED() iot_led_pulse(STATUS_LED, IOT_BTN_LED_COLOR, 100, 100, 4, NORMAL_LED_PRIORITY );
 
 #define IOT_SET_LIMITS_LED() iot_led_pulse(STATUS_LED, IOT_BTN_LED_COLOR, 100, 100, 2, NORMAL_LED_PRIORITY );
 #define IOT_RESET_LIMITS_LED() iot_led_pulse(STATUS_LED, IOT_BTN_LED_COLOR, 100, 100, 3, NORMAL_LED_PRIORITY );
@@ -95,7 +103,6 @@
 #define RXD_PIN (GPIO_NUM_5)	// RX pin from Motor unit
 
 #else	// ESP8266
-//#define BTN1_GPIO 14 // Btn up
 #define BTN1_GPIO 14 // Btn up
 #define BTN2_GPIO 0 // Btn down (doubles as download/flash button)
 #define LED_GPIO 12

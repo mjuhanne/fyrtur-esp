@@ -20,68 +20,155 @@ extern bool run_console();
 #endif
 #include "si7021.h"
 
-
-#define TAG "fyrtur"
-#define DEFAULT_SENSOR_BROADCAST_INTERVAL 10 // seconds
-#define DEFAULT_MOTOR_SPEED 25  // rpm
-
-#define MQTT_SETTING_MOTOR_SPEED "speed"
-#define MQTT_SETTING_DEFAULT_MOTOR_SPEED "default_speed"
-#define MQTT_SETTING_MINIMUM_OPERATING_VOLTAGE "minimum_voltage"
-
-#define MQTT_SETTING_SENSOR_BROADCAST_INTERVAL "sensor_broadcast_interval"
-
-const char node_base_name[] = TAG;
+#ifdef ESP32
+#define TAG "fyrtur-esp32"
+#else
+#define TAG "fyrtur-esp8266"
+#endif
 
 #define NODE_BUILD_VERSION __DATE__ "-" __TIME__
 
+#define DEFAULT_SENSOR_BROADCAST_INTERVAL 10 // seconds
+#define NORMAL_MOTOR_SPEED 25  // rpm
+
+#define MQTT_SETTING_TARGET_POSITION "target_position"
+#define MQTT_SETTING_LOCATION "location"
+#define MQTT_SETTING_FULL_LEN "full_len"
+#define MQTT_SETTING_MAX_LEN "max_len"
+#define MQTT_SETTING_MOTOR_SPEED "speed"
+#define MQTT_SETTING_DEFAULT_MOTOR_SPEED "default_speed"
+#define MQTT_SETTING_MINIMUM_OPERATING_VOLTAGE "minimum_voltage"
+#define MQTT_SETTING_DIAGNOSTICS "diagnostics"
+#define MQTT_SETTING_SENSOR_BROADCAST_INTERVAL "sensor_broadcast_interval"
+
+// Template for configuration topic to be used with Home Assistant's MQTT discovery.
+// device_type: cover
+// device_class: blind
+#define BLIND_HA_CFG "{\
+    \"name\": \"%s\", \
+    \"unique_id\": \"%s\", \
+    \"device_class\": \"blind\", \
+    \"command_topic\": \"/home/control/%s/command\", \
+    \"position_topic\": \"/home/cover/%s/position\", \
+    \"set_position_topic\": \"/home/control/%s/set/target_position\", \
+    \"position_open\": 1000 \
+    }"
+
+
+// Optional temperature and humidity sensor template for configuration topic to be used with Home Assistant's MQTT discovery.
+// device_type: sensor
+// device_class: temperature
+#define SENSOR_TEMPERATURE_CFG "{\
+    \"name\": \"%s temperature\", \
+    \"device_class\": \"temperature\", \
+    \"state_topic\": \"/home/sensor/%s/temperature\" \
+    }"
+
+// device_type: sensor
+// device_class: humidity
+#define SENSOR_HUMIDITY_CFG "{\
+    \"name\": \"%s humidity\", \
+    \"device_class\": \"humidity\", \
+    \"state_topic\": \"/home/sensor/%s/humidity\" \
+    }"
+
+const char node_base_name[] = TAG;
+
 static bool sensor_detected = false;
-static uint32_t sensor_broadcast_interval = DEFAULT_SENSOR_BROADCAST_INTERVAL * 1000;   // interval is stored as milliseconds
+static uint32_t sensor_broadcast_interval;
+static bool diagnostics = false;    // if this is set, more verbose diagnostics data is sent via MQTT
+
 
 int node_handle_mqtt_set(void * arg) {
+    iot_set_variable_return_code_t ret = IOT_OK;
     iot_variable_t * var = (iot_variable_t*)arg;
-    if (strcmp(var->name,MQTT_SETTING_MOTOR_SPEED)==0) {
-        float speed = atof(var->data);
-        if ( (speed >= 2) && (speed <= 25) ) {
-            ESP_LOGI(TAG,"Setting motor speed to %.1f", speed);
-            blinds_set_speed(speed);
+    if (strcmp(var->name,MQTT_SETTING_TARGET_POSITION)==0) {
+        // Motor reports position between 0 (open) and 100 (closed). 
+        // For Home Assistant this numbering is reversed and multiplied (0 = closed, 1000 = open )
+        uint16_t pos = atoi(var->data);
+        if (pos <= 1000) {
+            blinds_go_to((float)(1000-pos)/10, false);
         } else {
-            ESP_LOGE(TAG,"Invalid speed %.1f!",speed);
+            ESP_LOGE(TAG,"Invalid target position %d!", pos);
+            mqtt_publish_error("Invalid target position!");
+            ret = IOT_INVALID_VALUE; 
+        }
+    } else if (strcmp(var->name,MQTT_SETTING_LOCATION)==0) {
+        uint16_t loc = atoi(var->data);
+        if (loc <= 8192) {
+            blinds_set_location(loc);
+        } else {
+            ESP_LOGE(TAG,"Invalid location %d!", loc);
+            mqtt_publish_error("Invalid location!");
+            ret = IOT_INVALID_VALUE; 
+        }
+    } else if (strcmp(var->name,MQTT_SETTING_MAX_LEN)==0) {
+        blinds_set_max_length();
+        if (diagnostics) {
+            blinds_read_status_reg(EXT_LIMIT_STATUS_REG);   // read back the limits
+        }
+    } else if (strcmp(var->name,MQTT_SETTING_FULL_LEN)==0) {
+        blinds_set_full_length();        
+        if (diagnostics) {
+            blinds_read_status_reg(EXT_LIMIT_STATUS_REG);   // read back the limits
+        }
+    } else if (strcmp(var->name,MQTT_SETTING_MOTOR_SPEED)==0) {
+        int speed = atoi(var->data);
+        if ( (speed >= 2) && (speed <= 25) ) {
+            ESP_LOGI(TAG,"Setting motor speed to %d", speed);
+            blinds_set_speed(speed);    // this is a temporary setting and will not be saved
+        } else {
+            ESP_LOGE(TAG,"Invalid speed %d!", speed);
             mqtt_publish_error("Invalid motor speed!");
+            ret = IOT_INVALID_VALUE;
         }
-        return 1;
     } else if (strcmp(var->name,MQTT_SETTING_DEFAULT_MOTOR_SPEED)==0) {
-        float speed = atof(var->data);
+        int speed = atoi(var->data);
         if ( (speed >= 2) && (speed <= 25) ) {
-            ESP_LOGI(TAG,"Setting default motor speed to %.1f", speed);
-            blinds_set_default_speed(speed);
+            ESP_LOGI(TAG,"Setting default motor speed to %d", speed);
+            blinds_set_default_speed(speed);    // value will be saved by motor module
         } else {
-            ESP_LOGE(TAG,"Invalid speed %.1f!",speed);
+            ESP_LOGE(TAG,"Invalid speed %d!",speed);
             mqtt_publish_error("Invalid default motor speed!");
+            ret = IOT_INVALID_VALUE;
         }
-        return 1;
     } else if (strcmp(var->name,MQTT_SETTING_MINIMUM_OPERATING_VOLTAGE)==0) {
         float voltage = atof(var->data);
         if (voltage <= 8) {
             ESP_LOGI(TAG,"Setting minimum operating voltage to %.1f", voltage);
-            blinds_set_minimum_voltage(voltage);
+            blinds_set_minimum_voltage(voltage);    // value will be saved by motor module
         } else {
-            ESP_LOGE(TAG,"Invalid minimum voltage %.1f!",voltage);
+            ESP_LOGE(TAG,"Invalid minimum voltage %.1f!", voltage);
             mqtt_publish_error("Invalid minimum voltage!");
+            ret = IOT_INVALID_VALUE;
         }
-        return 1;
     } else if (strcmp(var->name,MQTT_SETTING_SENSOR_BROADCAST_INTERVAL)==0) {
         int interval = atoi(var->data);
         if (interval >= 0) {
             sensor_broadcast_interval = interval * 1000; // interval is stored as milliseconds
+            ret = IOT_SAVE_VARIABLE;
         } else {
-            ESP_LOGE(TAG,"Invalid broadcast interval %d!",interval);
-            mqtt_publish_error("Invalid interval!");
+            ESP_LOGE(TAG,"Invalid broadcast interval %d!", interval);
+            mqtt_publish_error("Invalid broadcast interval!");
+            ret = IOT_INVALID_VALUE;
         }
-        return 1;
+    } else if (strcmp(var->name,MQTT_SETTING_DIAGNOSTICS)==0) {
+        int dg = atoi(var->data);
+        if (dg < 2) {
+            diagnostics = dg;
+            blinds_set_diagnostics(dg);
+            ret = IOT_SAVE_VARIABLE;
+        } else {
+            ESP_LOGE(TAG,"Invalid diagnostics setting %d!", dg);
+            mqtt_publish_error("Invalid diagnostics setting!");
+            ret = IOT_INVALID_VALUE;
+        }
+    } else {
+        ret = IOT_VARIABLE_NOT_FOUND;
     }
-    return 0;
+    return ret;
 }
+
 
 int node_handle_mqtt_msg(void * arg) {
     iot_mqtt_msg_t * msg = (iot_mqtt_msg_t*)arg;
@@ -100,21 +187,8 @@ int node_handle_mqtt_msg(void * arg) {
             } else {
                 ESP_LOGE(TAG,"command: no data!");
             }
-        } else if (strcmp(msg->subtopic,"set_position")==0) {
-            if (msg->data) {
-                // Motor reports position between 0 (open) and 100 (closed). 
-                // For Home Assistant this numbering is reversed and multiplied (0 = closed, 1000 = open )
-            	uint16_t pos = atoi(msg->data);
-            	blinds_go_to((float)(1000-pos)/10, false);
-            } else {
-                ESP_LOGE(TAG,"set_position: no pos!");
-            }
         } else if (strcmp(msg->subtopic,"reset")==0) {
-            blinds_reset();
-        } else if (strcmp(msg->subtopic,"set_max_len")==0) {
-            blinds_set_max_length();
-        } else if (strcmp(msg->subtopic,"set_full_len")==0) {
-            blinds_set_full_length();
+            blinds_reset_max_length();
         } else if (strcmp(msg->subtopic,"force_move_up")==0) {
             if (msg->data) {
                 float revs = atof(msg->data);
@@ -142,42 +216,72 @@ int node_handle_mqtt_msg(void * arg) {
     return 0;
 }
 
-void blinds_motor_position_updated( float position ) {
-    // Motor reports position between 0 (open) and 100 (closed). 
-    // For Home Assistant this numbering is reversed and multiplied (0 = closed, 1000 = open )
-	mqtt_publish_int("cover","position",1000-position*10);
+
+void blinds_variable_updated( blinds_variable_t variable ) {
+    switch (variable) {
+        case BLINDS_POSITION: {
+            // Motor reports position between 0 (open) and 100 (closed). 
+            // For Home Assistant this numbering is reversed and multiplied (0 = closed, 1000 = open )
+            mqtt_publish_int("cover","position", 1000- (blinds_get_position()*10) );
+        }
+        break;
+
+        case BLINDS_VOLTAGE: {
+            mqtt_publish_float("cover","voltage", blinds_get_voltage());
+        }
+        break;
+
+        case BLINDS_LOCATION: {
+            mqtt_publish_int("cover","location", blinds_get_location());
+        }
+        break;
+
+        case BLINDS_TARGET_LOCATION: {
+            mqtt_publish_int("cover","target_location", blinds_get_target_location());
+        }
+        break;
+
+        case BLINDS_SPEED: {
+            mqtt_publish_int("cover","speed", blinds_get_speed());
+        }
+        break;
+
+        case BLINDS_RESETTING: {
+            mqtt_publish_int("cover","resetting", blinds_get_resetting_status());
+        }
+        break;
+
+        case BLINDS_MAX_LEN: {
+            mqtt_publish_int("cover","max_length", blinds_get_max_length());
+        }
+        break;
+
+        case BLINDS_FULL_LEN: {
+            mqtt_publish_int("cover","full_length", blinds_get_full_length());
+        }
+        break;
+        case BLINDS_MOTOR_STATUS: {
+            mqtt_publish("cover","motor_status", blinds_get_motor_status_str());
+        }
+        break;
+        case BLINDS_STATUS: {
+            mqtt_publish("cover","status", blinds_get_status_str());
+        }
+        break;
+        case BLINDS_DIRECTION: {
+            mqtt_publish("cover","direction", blinds_get_direction_str());
+        }
+        break;
+        case BLINDS_TARGET_POSITION: {
+            mqtt_publish_int("cover","target_position", 1000 - blinds_get_target_position()*10);
+        }
+        break;
+
+
+        default:
+            break;
+    }
 }
-
-// Template for configuration topic to be used with Home Assistant's MQTT discovery.
-// device_type: cover
-// device_class: blind
-#define BLIND_HA_CFG "{\
-    \"name\": \"%s\", \
-    \"unique_id\": \"%s\", \
-    \"device_class\": \"blind\", \
-    \"command_topic\": \"/home/control/%s/command\", \
-    \"position_topic\": \"/home/cover/%s/position\", \
-    \"set_position_topic\": \"/home/control/%s/set_position\", \
-    \"position_open\": 1000 \
-    }"
-
-
-// Optional temperature and humidity sensor template for configuration topic to be used with Home Assistant's MQTT discovery.
-// device_type: sensor
-// device_class: temperature
-#define SENSOR_TEMPERATURE_CFG "{\
-    \"name\": \"%s temperature\", \
-    \"device_class\": \"temperature\", \
-    \"state_topic\": \"/home/sensor/%s/temperature\" \
-    }"
-
-// device_type: sensor
-// device_class: humidity
-#define SENSOR_HUMIDITY_CFG "{\
-    \"name\": \"%s humidity\", \
-    \"device_class\": \"humidity\", \
-    \"state_topic\": \"/home/sensor/%s/humidity\" \
-    }"
 
 
 void node_publish_ha_cfg() {
@@ -189,22 +293,40 @@ void node_publish_ha_cfg() {
         mqtt_publish_ha_cfg("sensor", "temperature/config", SENSOR_TEMPERATURE_CFG, 2);
         mqtt_publish_ha_cfg("sensor", "humidity/config", SENSOR_HUMIDITY_CFG, 2);
     }
-
-    // publish current curtain state
-    blinds_motor_position_updated( blinds_get_pos() );
-
 }
 
 void node_handle_mqtt_connected() {
-    ESP_LOGD(TAG, "node_handle_mqtt_connected Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGD(TAG, "node_handle_mqtt_connected - stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
     node_publish_ha_cfg();
     mqtt_publish_ext("node", "version", NODE_BUILD_VERSION, true);
 
-    if (blinds_is_custom_firmware()) {
+    motor_firmware_status_t fw_status = blinds_get_firmware_status();
+    if (fw_status == CUSTOM_FW) {
         mqtt_publish_ext("node", "motor_version", blinds_get_version(), true);
+
+        blinds_variable_updated(BLINDS_POSITION);
+        blinds_variable_updated(BLINDS_VOLTAGE);
+        blinds_variable_updated(BLINDS_SPEED);
+        if (diagnostics) {
+            blinds_variable_updated(BLINDS_LOCATION);
+            blinds_variable_updated(BLINDS_TARGET_LOCATION);
+            blinds_variable_updated(BLINDS_RESETTING);
+            blinds_variable_updated(BLINDS_MAX_LEN);
+            blinds_variable_updated(BLINDS_FULL_LEN);
+            blinds_variable_updated(BLINDS_MOTOR_STATUS);
+            blinds_variable_updated(BLINDS_STATUS);
+            blinds_variable_updated(BLINDS_DIRECTION);
+        }
+
+    } else if (fw_status == ORIGINAL_FW) {
+        mqtt_publish_ext("node", "motor_version", "Original", true);
+        blinds_variable_updated(BLINDS_POSITION);
+        blinds_variable_updated(BLINDS_VOLTAGE);
+        blinds_variable_updated(BLINDS_SPEED);
+
     } else {
-        mqtt_publish_ext("node", "motor_version", "Original", true);        
+        mqtt_publish_ext("node", "motor_version", "Not detected!", true);        
     }
 }
 
@@ -266,13 +388,15 @@ int node_handle_error( void * arg) {
 }
 
 int node_handle_factory_reset( void * arg) {
-    iot_led_pulse(STATUS_LED, 0, 0, 30, 1000, 1000, -1, NORMAL_LED_PRIORITY);
-    // TODO
+    blinds_set_default_speed(NORMAL_MOTOR_SPEED);
+    vTaskDelay( 50 / portTICK_PERIOD_MS );
+    blinds_set_auto_cal(true);
+    vTaskDelay( 50 / portTICK_PERIOD_MS );
+    blinds_set_minimum_voltage(0);
+    vTaskDelay( 50 / portTICK_PERIOD_MS );
+    blinds_reset_full_length(); // Warning! This will NOT reset the full curtain length if using original firmware!
     return 0;
 }
-
-
-
 
 void app_main()
 {
@@ -307,19 +431,28 @@ void app_main()
     // Initialize the blinds engine
     blinds_init();
 
-    // Set motor speed
-    /*
-    if (blinds_is_custom_firmware()) {    
+    if (iot_get_nvs_uint32(MQTT_SETTING_SENSOR_BROADCAST_INTERVAL, &sensor_broadcast_interval)) {
+        ESP_LOGI(TAG,"Setting sensor broadcast interval to %d seconds", sensor_broadcast_interval);
+    } else {
+        sensor_broadcast_interval = DEFAULT_SENSOR_BROADCAST_INTERVAL;
+        ESP_LOGI(TAG,"Setting sensor broadcast interval to default setting of %d seconds", sensor_broadcast_interval);
+    }
+    sensor_broadcast_interval *= 1000;   // interval is stored as milliseconds
+
+    iot_get_nvs_bool(MQTT_SETTING_DIAGNOSTICS, &diagnostics);
+    ESP_LOGI(TAG,"Setting verbose motor MQTT diagnostics to %d", diagnostics);
+    blinds_set_diagnostics(diagnostics);
+
+    if (blinds_get_firmware_status() == CUSTOM_FW) {    
         float speed;
         if (iot_get_nvs_float(MQTT_SETTING_MOTOR_SPEED, &speed)) {
             ESP_LOGI(TAG,"Setting motor speed to saved setting of %.1f rpm", speed);
         } else {
-            speed = DEFAULT_MOTOR_SPEED;
-            ESP_LOGI(TAG,"Setting motor speed to default setting of %.1f rpm", speed);
+            speed = NORMAL_MOTOR_SPEED;
+            ESP_LOGI(TAG,"Setting motor speed to normal setting of %.1f rpm", speed);
         }
         blinds_set_speed(speed);
     }    
-    */
 
     // set verbose logging for debugging purposes
     iot_logging();
@@ -358,11 +491,11 @@ void app_main()
                     
                     char temp_string[10];
                     char hum_string[10];
-                    if (temperature==-999) 
+                    if (temperature == -999) 
                         strcpy(temp_string,"ERR");
                     else
                         snprintf(temp_string, 10,"%.1f", temperature);
-                    if (humidity==-999) 
+                    if (humidity == -999) 
                         strcpy(hum_string,"ERR");
                     else
                         snprintf(hum_string, 10,"%.0f", humidity);

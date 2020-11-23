@@ -14,6 +14,9 @@
 #include "argtable3/argtable3.h"
 #include "../main/blinds.h"
 #include "driver/gpio.h"
+#include "si7021.h"
+#include "wifi_manager.h"
+
 
 static const char * TAG = "CONSOLE";
 
@@ -30,13 +33,18 @@ static struct {
     struct arg_end *end;
 } blinds_cmd_args;
 
+/** Arguments used by 'node' function */
+static struct {
+    struct arg_str *arg1;
+    struct arg_end *end;
+} node_cmd_args;
 
-static int send_blinds_cmd(int argc, char **argv)
+static int console_blinds_cmd(int argc, char **argv)
 {
-    static const char *SEND_CMD_TAG = "BLINDS_CMD";
     float revs, position, speed;
     int location;
-    bool silent=false;
+    bool force_small_steps = false;
+    unsigned int cmd_byte1, cmd_byte2;
 
     int nerrors = arg_parse(argc, argv, (void **) &blinds_cmd_args);
     if (nerrors != 0) {
@@ -44,34 +52,47 @@ static int send_blinds_cmd(int argc, char **argv)
         return 1;
     }
 
-    if ( (blinds_cmd_args.arg2->count > 0) && (strcmp(blinds_cmd_args.arg2->sval[0], "silent")==0) )
-        silent=true;
-    if ( (blinds_cmd_args.arg3->count > 0) && (strcmp(blinds_cmd_args.arg3->sval[0], "silent")==0) )
-        silent=true;
+    if ( (blinds_cmd_args.arg2->count > 0) && (strcmp(blinds_cmd_args.arg2->sval[0], "steps")==0) )
+        force_small_steps=true;
+    if ( (blinds_cmd_args.arg3->count > 0) && (strcmp(blinds_cmd_args.arg3->sval[0], "steps")==0) )
+        force_small_steps=true;
 
     if (strcmp(blinds_cmd_args.arg1->sval[0], "up")==0) {
         if ( (blinds_cmd_args.arg2->count > 0) && (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &revs) != 1) ) {
             revs=0;
         }
-        blinds_move(DIRECTION_UP, revs, silent, false);
+        blinds_move(DIRECTION_UP, revs, force_small_steps, false);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "down")==0) {
         if ( (blinds_cmd_args.arg2->count > 0) && (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &revs) != 1) ) {
             revs=0;
         }
-        blinds_move(DIRECTION_DOWN, revs, silent, false);
+        blinds_move(DIRECTION_DOWN, revs, force_small_steps, false);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "goto")==0) {
         if (blinds_cmd_args.arg2->count > 0) {
             if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &position) != 1) {
-                ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (position)");
+                ESP_LOGE(TAG,"Invalid arg #1 (position)");
                 return 1;
             } else {
-                blinds_go_to(position, silent);
+                blinds_go_to(position, force_small_steps);
+            }
+        }       
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "goto_loc")==0) {
+        if (blinds_cmd_args.arg2->count > 0) {
+            if (sscanf(blinds_cmd_args.arg2->sval[0], "%d", &location) != 1) {
+                ESP_LOGE(TAG,"Invalid arg #1 (location)");
+                return 1;
+            } else {
+                if (abs(location) < 8192) { // maximum parameter size is 12 bits. Lowermost bit is not transmitted so maximum is 8191
+                    blinds_go_to_location(location);
+                } else {
+                    ESP_LOGE(TAG,"Location out of bounds!");
+                }
             }
         }       
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "speed")==0) {
         if (blinds_cmd_args.arg2->count > 0) {
             if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &speed) != 1) {
-                ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (speed)");
+                ESP_LOGE(TAG,"Invalid arg #1 (speed)");
                 return 1;
             } else {
                 blinds_set_speed(speed);
@@ -80,7 +101,7 @@ static int send_blinds_cmd(int argc, char **argv)
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "default_speed")==0) {
         if (blinds_cmd_args.arg2->count > 0) {
             if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &speed) != 1) {
-                ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (speed)");
+                ESP_LOGE(TAG,"Invalid arg #1 (speed)");
                 return 1;
             } else {
                 blinds_set_default_speed(speed);
@@ -89,7 +110,7 @@ static int send_blinds_cmd(int argc, char **argv)
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "minimum_voltage")==0) {
         if (blinds_cmd_args.arg2->count > 0) {
             if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &position) != 1) {
-                ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (voltage)");
+                ESP_LOGE(TAG,"Invalid arg #1 (voltage)");
                 return 1;
             } else {
                 blinds_set_minimum_voltage(position);
@@ -98,53 +119,117 @@ static int send_blinds_cmd(int argc, char **argv)
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "stop")==0) {
         blinds_stop();
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "status")==0) {
-        if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &position) != 1) {
+        if (blinds_cmd_args.arg2->count > 0) {
+            if (sscanf(blinds_cmd_args.arg2->sval[0], "%d", &location) != 1) {
+                ESP_LOGE(TAG,"Invalid arg #1 (status register #)");
+                return 1;
+            }
+            blinds_read_status_reg(location-1);
+        } else {
             blinds_read_status_reg(STATUS_REG_1);
-        } else
-            blinds_read_status_reg(position-1);
+        }
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "location")==0) {
         blinds_read_status_reg(EXT_LOCATION_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_location")==0) {
         if (blinds_cmd_args.arg2->count > 0) {
             if (sscanf(blinds_cmd_args.arg2->sval[0], "%d", &location) != 1) {
-                ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (location)");
+                ESP_LOGE(TAG,"Invalid arg #1 (location)");
                 return 1;
             } else {
-                if (abs(location) < (8*256)) { // maximum parameter size is 12 bits (1 sign bit + 11 integer part bits)
+                if (abs(location) < 8192) { // maximum parameter size is 12 bits. Lowermost bit is not transmitted so maximum is 8191
                     blinds_set_location(location);
                 } else {
-                    ESP_LOGE(SEND_CMD_TAG,"Location out of bounds!");
+                    ESP_LOGE(TAG,"Location out of bounds!");
                 }
             }
         }       
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "version")==0) {
+        blinds_read_status_reg(EXT_VERSION_REG);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "debug")==0) {
+        blinds_read_status_reg(EXT_DEBUG_REG);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "sensor")==0) {
+        blinds_read_status_reg(EXT_SENSOR_DEBUG_REG);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "info")==0) {
+        blinds_read_status_reg(EXT_STATUS_REG);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+        blinds_read_status_reg(EXT_LOCATION_REG);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+        blinds_read_status_reg(EXT_DEBUG_REG);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
+        blinds_read_status_reg(EXT_SENSOR_DEBUG_REG);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "ext_status")==0) {
         blinds_read_status_reg(EXT_STATUS_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "limits")==0) {
         blinds_read_status_reg(EXT_LIMIT_STATUS_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "reset")==0) {
-        blinds_reset();
+        blinds_reset_max_length();
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_max_len")==0) {
         blinds_set_max_length();
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_full_len")==0) {
         blinds_set_full_length();
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "force_up")==0) {
         if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &revs) != 1) {
-            ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (revolutions)");
+            ESP_LOGE(TAG,"Invalid arg #1 (revolutions)");
             return 1;
         }
-        blinds_move(DIRECTION_UP, revs, silent, true);
+        blinds_move(DIRECTION_UP, revs, force_small_steps, true);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "force_down")==0) {
         if (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &revs) != 1) {
-            ESP_LOGE(SEND_CMD_TAG,"Invalid arg #2 (revolutions)");
+            ESP_LOGE(TAG,"Invalid arg #1 (revolutions)");
             return 1;
         }
-        blinds_move(DIRECTION_DOWN, revs, silent, true);
+        blinds_move(DIRECTION_DOWN, revs, force_small_steps, true);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "raw")==0) {
+        if ( (blinds_cmd_args.arg2->count == 0) || (blinds_cmd_args.arg3->count == 0) ) {
+            ESP_LOGE(TAG,"No cmd_byte1 or cmd_byte2 argument given!");
+            return 1;
+        }
+        if (sscanf(blinds_cmd_args.arg2->sval[0], "%x", &cmd_byte1) != 1) {
+            ESP_LOGE(TAG,"Invalid arg #1 (cmd_byte1)");
+            return 1;
+        }
+        if (sscanf(blinds_cmd_args.arg3->sval[0], "%x", &cmd_byte2) != 1) {
+            ESP_LOGE(TAG,"Invalid arg #2 (cmd_byte2)");
+            return 1;
+        }
+        blinds_send_raw( cmd_byte1, cmd_byte2 );
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_auto_cal")==0) {
+        if ( (sscanf(blinds_cmd_args.arg2->sval[0], "%d", &cmd_byte2) != 1) || (cmd_byte2 > 1) ) {
+            ESP_LOGE(TAG,"Invalid arg #1 (enabled setting)");
+            return 1;
+        }
+        blinds_set_auto_cal(cmd_byte2);
     } else {
         ESP_LOGE(TAG, "Invalid arg %s", blinds_cmd_args.arg1->sval[0] );
     }
     
     return 0;
 }
+
+
+static int console_node_cmd(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **) &node_cmd_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, node_cmd_args.end, argv[0]);
+        return 1;
+    }
+
+    if (strcmp(node_cmd_args.arg1->sval[0], "read_sensor")==0) {
+        float temperature = si7021_read_temperature();
+        float humidity = si7021_read_humidity();
+        ESP_LOGI(TAG,"Temperature %f. Humidity %f", temperature, humidity);
+    } else if (strcmp(node_cmd_args.arg1->sval[0], "start_ap")==0) {
+        wifi_manager_send_message(WM_ORDER_START_AP, NULL);
+    } else if (strcmp(node_cmd_args.arg1->sval[0], "stop_ap")==0) {
+        wifi_manager_send_message(WM_ORDER_STOP_AP, NULL);
+    }
+    return 0;
+}
+
+
+
 
 void initialize_console()
 {
@@ -222,20 +307,35 @@ void initialize_console()
 #endif //CONFIG_LOG_COLORS
     }
 
-    blinds_cmd_args.arg1 = arg_str1(NULL, NULL, "<arg1>", "ARG #1 of command");
-    blinds_cmd_args.arg2 = arg_str0(NULL, NULL, "<arg2>", "ARG #2 of command");
-    blinds_cmd_args.arg3 = arg_str0(NULL, NULL, "<arg3>", "ARG #3 of command");
+    blinds_cmd_args.arg1 = arg_str1(NULL, NULL, "<arg1>", "command");
+    blinds_cmd_args.arg2 = arg_str0(NULL, NULL, "<arg2>", "ARG #1 of command");
+    blinds_cmd_args.arg3 = arg_str0(NULL, NULL, "<arg3>", "ARG #2 of command");
     blinds_cmd_args.end = arg_end(2);
 
     const esp_console_cmd_t blinds_cmd = {
         .command = "blinds",
-        .help = "Send command to blinds",
+        .help = "Control Fyrtur blinds",
         .hint = NULL,
-        .func = &send_blinds_cmd,
+        .func = &console_blinds_cmd,
         .argtable = &blinds_cmd_args
     };
 
     ESP_ERROR_CHECK( esp_console_cmd_register(&blinds_cmd) );
+
+    node_cmd_args.arg1 = arg_str1(NULL, NULL, "<arg1>", "command");
+    node_cmd_args.end = arg_end(2);
+
+    // Maintenance commands for node. 
+    const esp_console_cmd_t node_cmd = {
+        .command = "node",
+        .help = "Node maintenance functions",
+        .hint = NULL,
+        .func = &console_node_cmd,
+        .argtable = &node_cmd_args
+    };
+
+    ESP_ERROR_CHECK( esp_console_cmd_register(&node_cmd) );
+
 }
 
 bool run_console() {
