@@ -61,6 +61,7 @@ int blinds_motor_status;
 int blinds_location;
 int blinds_target_location;
 int blinds_default_speed;
+int blinds_orientation;
 
 blinds_direction_t blinds_direction = DIRECTION_STOPPED;		// current direction the motor is moving
 
@@ -137,6 +138,7 @@ static const char cmd_ext_set_minimum_voltage[2] = { 0x40, 0x00 };  // second by
 static const char cmd_ext_go_to[2] = { 0x10, 0x00 }; // target position is the lower 4 bits of the 1st byte + 2nd byte (12 bits of granularity)
 static const char cmd_ext_set_location[2] = { 0x50, 0x00 }; // location is the lower 4 bits of the 1st byte + 2nd byte (1 sign bit + 11 bits of integer part)
 static const char cmd_ext_set_auto_cal[2] = { 0x60, 0x00 }; 
+static const char cmd_ext_set_orientation[2] = { 0x61, 0x00 }; 
 static const char cmd_ext_go_to_location[2] = { 0x70, 0x00 }; // location is the lower 4 bits of the 1st byte + 2nd byte (1 sign bit + 11 bits of integer part)
 
 static const char cmd_ext_debug[2] = { 0xcc, 0xd1 };
@@ -771,7 +773,7 @@ int blinds_set_auto_cal(bool enabled) {
     blinds_msg msg;
     if (blinds_queue != NULL) {
         msg.cmd = blinds_cmd_set_auto_cal;
-        msg.location = enabled;
+        msg.cmd_byte2 = enabled;
         if( xQueueSend( blinds_queue, ( void * ) &msg, ( TickType_t ) 10) != pdPASS ) {
             ESP_LOGE(TAG,"error queueing blinds msg!");
             return 0;
@@ -780,6 +782,31 @@ int blinds_set_auto_cal(bool enabled) {
      return 1;  
 }
 
+int blinds_task_set_orientation(blinds_orientation_t orientation) {
+    char cmd[2];
+    if (motor_firmware_status == CUSTOM_FW) {
+        cmd[0] = cmd_ext_set_orientation[0];
+        cmd[1] = orientation;
+        blinds_send_cmd( cmd ); 
+
+        // read back the setting
+        blinds_task_read_status_reg(EXT_LIMIT_STATUS_REG);
+    }
+    return 1;
+}
+
+int blinds_set_orientation( blinds_orientation_t orientation) {
+    blinds_msg msg;
+    if (blinds_queue != NULL) {
+        msg.cmd = blinds_cmd_set_orientation;
+        msg.cmd_byte2 = orientation;
+        if( xQueueSend( blinds_queue, ( void * ) &msg, ( TickType_t ) 10) != pdPASS ) {
+            ESP_LOGE(TAG,"error queueing blinds msg!");
+            return 0;
+            }
+     }
+     return 1;  
+}
 
 int blinds_get_speed() {
 	return blinds_speed;
@@ -821,6 +848,10 @@ int blinds_get_calibration_status() {
     return blinds_calibrating;
 }
 
+int blinds_get_orientation() {
+    return blinds_orientation;
+}
+
 blinds_status_t blinds_get_status() {
     return blinds_status;
 }
@@ -854,11 +885,15 @@ void blinds_process_status_reg_1( int battery_status, int voltage, int speed, in
 }
 
 
-void blinds_process_limit_status_reg( int calibrating, int max_length, int full_length ) {
-	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: calibrating: %d, max_length %d, full_length %d", calibrating, max_length, full_length );
+void blinds_process_limit_status_reg( int calibrating, int orientation, int max_length, int full_length ) {
+	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: calibrating: %d, orientation %d, max_length %d, full_length %d", calibrating, orientation, max_length, full_length );
     if (blinds_calibrating != calibrating) {
         blinds_calibrating = calibrating;   
-        blinds_variable_updated(BLINDS_CALIBRATING);     
+        blinds_variable_updated(BLINDS_CALIBRATING_STATUS);     
+    }
+    if (blinds_orientation != orientation) {
+        blinds_orientation = orientation;   
+        blinds_variable_updated(BLINDS_ORIENTATION);     
     }
     if (blinds_max_length != max_length) {
         blinds_max_length = max_length;
@@ -1080,7 +1115,7 @@ void blinds_uart_task(void *pvParameter) {
 			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
 			        if (checksum == data[8]) {
 			            packet_state = PACKET_VALID;
-			            blinds_process_limit_status_reg( data[3], data[4]*256 + data[5], data[6]*256 + data[7] );
+			            blinds_process_limit_status_reg( data[3]&1, (data[3]>>1)&1, data[4]*256 + data[5], data[6]*256 + data[7] );
 			        } else {
 			        	packet_state = PACKET_INVALID;
 			        }
@@ -1245,6 +1280,24 @@ void blinds_task(void *pvParameter) {
                                 blinds_task_set_minimum_voltage(msg.position);
                             } else {
                                 ESP_LOGE(TAG,"Setting minimum voltage not supported on original firmware!");                              
+                            }
+                        }
+                        break;
+                    case blinds_cmd_set_auto_cal: {
+                            if (motor_firmware_status == CUSTOM_FW) {
+                                ESP_LOGI(TAG,"Setting auto calibration to %d", msg.cmd_byte2);
+                                blinds_task_set_auto_cal(msg.cmd_byte2);
+                            } else {
+                                ESP_LOGE(TAG,"Setting auto calibration not supported on original firmware!");                              
+                            }
+                        }
+                        break;
+                    case blinds_cmd_set_orientation: {
+                            if (motor_firmware_status == CUSTOM_FW) {
+                                ESP_LOGI(TAG,"Setting orientation to %d", msg.cmd_byte2);
+                                blinds_task_set_orientation(msg.cmd_byte2);
+                            } else {
+                                ESP_LOGE(TAG,"Setting orientation not supported on original firmware!");                              
                             }
                         }
                         break;

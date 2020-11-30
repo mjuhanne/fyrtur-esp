@@ -31,6 +31,7 @@ extern bool run_console();
 #define DEFAULT_SENSOR_BROADCAST_INTERVAL 10 // seconds
 #define NORMAL_MOTOR_SPEED 25  // rpm
 
+#define MQTT_SETTING_ORIENTATION "orientation"
 #define MQTT_SETTING_TARGET_POSITION "target_position"
 #define MQTT_SETTING_LOCATION "location"
 #define MQTT_SETTING_FULL_LEN "full_len"
@@ -163,6 +164,15 @@ int node_handle_mqtt_set(void * arg) {
             mqtt_publish_error("Invalid diagnostics setting!");
             ret = IOT_INVALID_VALUE;
         }
+    } else if (strcmp(var->name,MQTT_SETTING_ORIENTATION)==0) {
+        blinds_orientation_t orientation = atoi(var->data);
+        if (orientation < 2) {
+            blinds_set_orientation(orientation);
+        } else {
+            ESP_LOGE(TAG,"Invalid orientation setting %d!", orientation);
+            mqtt_publish_error("Invalid orientation setting!");
+            ret = IOT_INVALID_VALUE;
+        }
     } else {
         ret = IOT_VARIABLE_NOT_FOUND;
     }
@@ -246,8 +256,13 @@ void blinds_variable_updated( blinds_variable_t variable ) {
         }
         break;
 
-        case BLINDS_RESETTING: {
-            mqtt_publish_int("cover","resetting", blinds_get_resetting_status());
+        case BLINDS_CALIBRATING_STATUS: {
+            mqtt_publish_int("cover","calibrating", blinds_get_calibration_status());
+        }
+        break;
+
+        case BLINDS_ORIENTATION: {
+            mqtt_publish_int("cover","orientation", blinds_get_orientation());
         }
         break;
 
@@ -260,23 +275,26 @@ void blinds_variable_updated( blinds_variable_t variable ) {
             mqtt_publish_int("cover","full_length", blinds_get_full_length());
         }
         break;
+
         case BLINDS_MOTOR_STATUS: {
             mqtt_publish("cover","motor_status", blinds_get_motor_status_str());
         }
         break;
+
         case BLINDS_STATUS: {
             mqtt_publish("cover","status", blinds_get_status_str());
         }
         break;
+
         case BLINDS_DIRECTION: {
             mqtt_publish("cover","direction", blinds_get_direction_str());
         }
         break;
+
         case BLINDS_TARGET_POSITION: {
             mqtt_publish_int("cover","target_position", 1000 - blinds_get_target_position()*10);
         }
         break;
-
 
         default:
             break;
@@ -308,15 +326,16 @@ void node_handle_mqtt_connected() {
         blinds_variable_updated(BLINDS_POSITION);
         blinds_variable_updated(BLINDS_VOLTAGE);
         blinds_variable_updated(BLINDS_SPEED);
+        blinds_variable_updated(BLINDS_ORIENTATION);
+        blinds_variable_updated(BLINDS_MOTOR_STATUS);
+        blinds_variable_updated(BLINDS_STATUS);
+        blinds_variable_updated(BLINDS_DIRECTION);
         if (diagnostics) {
             blinds_variable_updated(BLINDS_LOCATION);
             blinds_variable_updated(BLINDS_TARGET_LOCATION);
-            blinds_variable_updated(BLINDS_RESETTING);
+            blinds_variable_updated(BLINDS_CALIBRATING_STATUS);
             blinds_variable_updated(BLINDS_MAX_LEN);
             blinds_variable_updated(BLINDS_FULL_LEN);
-            blinds_variable_updated(BLINDS_MOTOR_STATUS);
-            blinds_variable_updated(BLINDS_STATUS);
-            blinds_variable_updated(BLINDS_DIRECTION);
         }
 
     } else if (fw_status == ORIGINAL_FW) {

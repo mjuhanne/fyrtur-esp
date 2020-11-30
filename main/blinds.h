@@ -40,7 +40,8 @@ typedef enum blinds_cmd_type {
 	blinds_cmd_set_location,
 	blinds_cmd_go_to_location,
 	blinds_cmd_set_auto_cal,
-	blinds_cmd_reset_full_length
+	blinds_cmd_reset_full_length,
+	blinds_cmd_set_orientation
 } blinds_cmd_type;
 
 typedef enum blinds_variable_t {
@@ -52,11 +53,17 @@ typedef enum blinds_variable_t {
 	BLINDS_MOTOR_STATUS,
 	BLINDS_MAX_LEN,
 	BLINDS_FULL_LEN,
-	BLINDS_RESETTING,
+	BLINDS_CALIBRATING_STATUS,
 	BLINDS_STATUS,
 	BLINDS_DIRECTION,
-	BLINDS_TARGET_POSITION
+	BLINDS_TARGET_POSITION,
+	BLINDS_ORIENTATION
 } blinds_variable_t;
+
+typedef enum blinds_orientation_t {
+	ORIENTATION_NORMAL = 0,
+	ORIENTATION_REVERSED = 1
+} blinds_orientation_t;
 
 typedef struct blinds_msg {
     blinds_cmd_type cmd;
@@ -118,6 +125,7 @@ int blinds_set_speed(int speed);
 int blinds_set_default_speed(int speed);
 int blinds_set_minimum_voltage(float voltage);
 int blinds_set_auto_cal(bool enabled);
+int blinds_set_orientation( blinds_orientation_t orientation );
 int blinds_go_to_location( int location );
 int blinds_get_target_position();
 int blinds_get_location();
@@ -125,7 +133,8 @@ int blinds_get_target_location();
 int blinds_get_full_length();
 int blinds_get_max_length();
 int blinds_get_target_speed();
-int blinds_get_resetting_status();
+int blinds_get_calibration_status();
+int blinds_get_orientation();
 const char * blinds_get_motor_status_str();
 char * blinds_get_version();
 

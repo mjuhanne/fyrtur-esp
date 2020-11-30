@@ -52,19 +52,21 @@ static int console_blinds_cmd(int argc, char **argv)
         return 1;
     }
 
+    revs = 0;
+
     if ( (blinds_cmd_args.arg2->count > 0) && (strcmp(blinds_cmd_args.arg2->sval[0], "steps")==0) )
-        force_small_steps=true;
+        force_small_steps = true;
     if ( (blinds_cmd_args.arg3->count > 0) && (strcmp(blinds_cmd_args.arg3->sval[0], "steps")==0) )
-        force_small_steps=true;
+        force_small_steps = true;
 
     if (strcmp(blinds_cmd_args.arg1->sval[0], "up")==0) {
         if ( (blinds_cmd_args.arg2->count > 0) && (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &revs) != 1) ) {
-            revs=0;
+            revs = 0;
         }
         blinds_move(DIRECTION_UP, revs, force_small_steps, false);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "down")==0) {
         if ( (blinds_cmd_args.arg2->count > 0) && (sscanf(blinds_cmd_args.arg2->sval[0], "%f", &revs) != 1) ) {
-            revs=0;
+            revs = 0;
         }
         blinds_move(DIRECTION_DOWN, revs, force_small_steps, false);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "goto")==0) {
@@ -196,10 +198,16 @@ static int console_blinds_cmd(int argc, char **argv)
         blinds_send_raw( cmd_byte1, cmd_byte2 );
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_auto_cal")==0) {
         if ( (sscanf(blinds_cmd_args.arg2->sval[0], "%d", &cmd_byte2) != 1) || (cmd_byte2 > 1) ) {
-            ESP_LOGE(TAG,"Invalid arg #1 (enabled setting)");
+            ESP_LOGE(TAG,"Invalid arg #1 (auto_cal setting)");
             return 1;
         }
         blinds_set_auto_cal(cmd_byte2);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "set_orientation")==0) {
+        if ( (sscanf(blinds_cmd_args.arg2->sval[0], "%d", &cmd_byte2) != 1) || (cmd_byte2 > 1) ) {
+            ESP_LOGE(TAG,"Invalid arg #1 (orientation setting)");
+            return 1;
+        }
+        blinds_set_orientation(cmd_byte2);
     } else {
         ESP_LOGE(TAG, "Invalid arg %s", blinds_cmd_args.arg1->sval[0] );
     }
