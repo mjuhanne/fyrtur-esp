@@ -1,30 +1,26 @@
 
-
-
-# IKEA Fyrtyr roller blind WiFi module firmware
-
-**Table of Contents**
-
-[TOC]
+# IKEA Fyrtur roller blind WiFi module firmware
 
 ## Introduction
 
-This is a firmware for custom ESP32 / ESP8266 based WiFi module that can be used to control IKEA Fyrtyr and Kadrilj roller blinds.
+This is a firmware for custom ESP32 / ESP8266 based WiFi module that can be used to control IKEA Fyrtur and Kadrilj roller blinds.
 
 First, why would one want to re-invent the wheel and replace the Ikea wireless module?
 
-* Avoid finicky Zigbee pairing operation (first pair the remote with the hub, then with the signal repeater, then with the blinds and hope that everything turns out fine.. which hasn't been my experience with the crappy Ikea Smart app)
+* Avoid finicky Zigbee pairing operation (first pair the remote with the hub, then with the signal repeater, then with the blinds and hope that everything turns out fine.. which hasn't been my experience with the Ikea Trådfri and Home Smart app)
 * Avoid unstable Zigbee normal mode operation (sometimes the blinds would go to deep sleep and would not wake up until manually woken up with a button press on the blinds. Also, the latency can vary from tolerable to awful)
 * MQTT and Home Assistant support including MQTT auto-discovery functionality for automatic detection of Fyrtur nodes
-* Possibility to use longer than 195cm blinds!
-* Slower and quieter operation possible
+* Enable the use of blinds longer than 195cm!
 * Possibility to integrate temperature/humidity sensors or maybe a window break-in sensor?
 
-There also exists [custom Fyrtur motor module firmware](https://github.com/mjuhanne/fyrtur-motor-board) that makes it possible to have more finer control of the motor unit:
+There also exists [a custom firmware for the Fyrtur motor module](https://github.com/mjuhanne/fyrtur-motor-board) that makes it possible to have more finer control of the motor unit along with several enhancements:
 
  * **Allow setting custom motor speed.** The full speed with original FW is a bit too noisy for my ears, especially when used to control morning sunlight in the bedroom. Now it's possible to set the speed to 3 RPM and enjoy the completely silent operation, waking up to the sunlight instead of whirring noise :)
- * **Allow the use of 5-6 volt DC source.** Original firmware was intended to be used with rechargeable battery which was protected from under-voltage by ceasing operation when voltage drops below 6 VDC. Our custom firmware instead is recommended to be used with [custom Fyrtyr Wifi Module](https://github.com/mjuhanne/fyrtur-esp) (plugged to DC adapter) so the low voltage limit for motor operation can be ignored, mitigating the need to shop for the harder-to-get 6-7.5 volt adapters. The minimum operating voltage check can be enabled though if one wants to use this with the original Zigbee module with battery.
- * **Allow finer curtain position handling.** Original firmware has 1% granularity for the curtain position (0% - 100%). This translates to 1.5 cm resolution when using blinds with 1.5m tall window. It doesn't sound much, but when using sunlight-blocking curtain a lot of sunlight can seep between lower curtain and window board from a 0.5-1.5 cm gap. The custom firmware allows setting target position with sub-percent resolution so curtain can be lowered more accurately.
+ * **Allow the use of "front roll" configuration (curtain rod flipped 180 degrees) to give 2-3cm space between window and the blinds
+ * **Enable the use of 5-6 volt DC source.** Original firmware was intended to be used with rechargeable battery which was protected from under-voltage by ceasing operation when voltage drops below 6 VDC. Conversely it is recommended that our custom firmware is used with the ESP WiFi module plugged to DC adapter. In this case the low voltage limit for motor operation can be ignored, mitigating the need to shop for the harder-to-get 6-7.5 volt adapters. The minimum operating voltage check can be enabled though if one wants to use this with the original Zigbee module with battery.
+ * **Smoother movement.** The blinds accelerate and decelerate more smoothly than with original FW
+ * **More stable position handling.** Original firmware starts losing its position gradually if it isn't calibrated every now and then by rolling the blinds to up-most position. The custom firmware retains its position much better in the long run.
+ * **Finer curtain position handling.** Original firmware has 1% granularity for the curtain position (0% - 100%). This translates to 1.5 cm resolution when using blinds with 1.5m tall window. It doesn't sound much, but when using sunlight-blocking curtain a lot of sunlight can seep between lower curtain and window board from a 0.5-1.5 cm gap. The custom firmware allows setting target position with sub-percent resolution so curtain can be lowered more accurately.  
 
 For more information about the custom firmware and the motor board itself (including reverse engineered schematics), please see the [motor module page](https://github.com/mjuhanne/fyrtur-motor-board).
 
@@ -38,14 +34,14 @@ There are many ways one can install the module. Probably the easiest way is to m
 
 #### Custom PCB 
 
-There is also a [custom PCB](https://github.com/mjuhanne/ikea-fyrtur) that replaces the original Fyrtur main board. It's been designed to hold ESP12F (ESP8266 PCB module) along with the usual reset paraphernalia. Alternatively one can use it as an interface board. In the latter case a separate ready-made ESP32 or ESP8266 module can be connected to the motor, LED and buttons via the interface board.
+There is also a [custom PCB](https://github.com/mjuhanne/ikea-fyrtur) that replaces the original Fyrtur main board. It's been designed to hold ESP12F (ESP8266 PCB module) along with the usual reset paraphernalia. Alternatively one can use it as an interface board. In the latter case a separate ESP32 or ESP8266 module (DevkitC for example) can be connected to the motor, LED and buttons via the interface board.
 
  ![Fyrtur custom PCB](https://github.com/mjuhanne/ikea-fyrtur/raw/main/images/Fyrtur-custom-PCB-1.png)
 
 
 ## Installation
 
-In the current state **it is recommended to use ESP32** since ESP8266 doesn't have enough memory to handle all the operation scenarios (especially when WiFi/MQTT manager Access Point is up) and its behaviour can be thus erratic at times. This might change in the future if the memory usage can be optimized significantly.
+In the current state **it is recommended to use ESP32** since ESP8266 might not have enough memory to handle all the operation scenarios (especially when WiFi/MQTT manager Access Point is up) and its behaviour can be thus erratic at times. This might change in the future if the memory usage can be optimized significantly.
 
 #### SDK 
 Install the ESP32 SDK (esp-idf) by following the steps on the [installation page](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html). Make sure you can build and deploy an example project before continuing further
@@ -169,6 +165,9 @@ Other MQTT remote control topics:
 - `/home/control/fyrtur-e975c1/set/minimum_voltage`
 	- Payload: minimum operating voltage
 	- The original Fyrtur module uses 7.4V battery which should be protected from under-voltage. The new module is intended to be supplied by 5-8 volt DC adapter so there's no need for battery protection anymore. The default setting is 0 (protection disabled). If needed, one can set the minimum operating voltage under which the motor will not be powered. **Note that this restriction will apply only to the DC motor, but not the STM32 chip inside motor module nor the ESP module!**
+- `/home/control/fyrtur-e975c1/set/orientation`
+	- Payload: 0 (normal/back roll configuration), 1 (reverse/front roll configuration)
+	- If you want to flip the curtain rod 180 degrees to "front roll" configuration, you can use this command. It's best to first use this command to change the software setting before doing the actual physical flipping, or otherwise be prepared to stop the blinds' automatic calibration attempt during power up by pressing UP or DOWN button (blinds would be rotating in wrong direction without any constraints..)
 
 #### Temperature and humidity sensor
 If *Fyrtur-esp* detects the external SI7021 / HTU21D temperature and humidity sensor, it will broadcast its measurements with following topics:

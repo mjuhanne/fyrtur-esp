@@ -450,29 +450,6 @@ void app_main()
     // Initialize the blinds engine
     blinds_init();
 
-    if (iot_get_nvs_uint32(MQTT_SETTING_SENSOR_BROADCAST_INTERVAL, &sensor_broadcast_interval)) {
-        ESP_LOGI(TAG,"Setting sensor broadcast interval to %d seconds", sensor_broadcast_interval);
-    } else {
-        sensor_broadcast_interval = DEFAULT_SENSOR_BROADCAST_INTERVAL;
-        ESP_LOGI(TAG,"Setting sensor broadcast interval to default setting of %d seconds", sensor_broadcast_interval);
-    }
-    sensor_broadcast_interval *= 1000;   // interval is stored as milliseconds
-
-    iot_get_nvs_bool(MQTT_SETTING_DIAGNOSTICS, &diagnostics);
-    ESP_LOGI(TAG,"Setting verbose motor MQTT diagnostics to %d", diagnostics);
-    blinds_set_diagnostics(diagnostics);
-
-    if (blinds_get_firmware_status() == CUSTOM_FW) {    
-        float speed;
-        if (iot_get_nvs_float(MQTT_SETTING_MOTOR_SPEED, &speed)) {
-            ESP_LOGI(TAG,"Setting motor speed to saved setting of %.1f rpm", speed);
-        } else {
-            speed = NORMAL_MOTOR_SPEED;
-            ESP_LOGI(TAG,"Setting motor speed to normal setting of %.1f rpm", speed);
-        }
-        blinds_set_speed(speed);
-    }    
-
     // set verbose logging for debugging purposes
     iot_logging();
 
@@ -495,6 +472,31 @@ void app_main()
     iot_set_callback( IOT_HANDLE_CONN_STATUS, node_handle_conn_status);
     iot_set_callback( IOT_HANDLE_FACTORY_RESET, node_handle_factory_reset);
     iot_set_callback( IOT_HANDLE_ERROR, node_handle_error);
+
+    if (sensor_detected) {
+        if (iot_get_nvs_uint32(MQTT_SETTING_SENSOR_BROADCAST_INTERVAL, &sensor_broadcast_interval)) {
+            ESP_LOGI(TAG,"Setting sensor broadcast interval to %d seconds", sensor_broadcast_interval);
+        } else {
+            sensor_broadcast_interval = DEFAULT_SENSOR_BROADCAST_INTERVAL;
+            ESP_LOGI(TAG,"Setting sensor broadcast interval to default setting of %d seconds", sensor_broadcast_interval);
+        }
+        sensor_broadcast_interval *= 1000;   // interval is stored as milliseconds
+    }
+
+    iot_get_nvs_bool(MQTT_SETTING_DIAGNOSTICS, &diagnostics);
+    ESP_LOGI(TAG,"Setting verbose motor MQTT diagnostics to %d", diagnostics);
+    blinds_set_diagnostics(diagnostics);
+
+    if (blinds_get_firmware_status() == CUSTOM_FW) {    
+        float speed;
+        if (iot_get_nvs_float(MQTT_SETTING_MOTOR_SPEED, &speed)) {
+            ESP_LOGI(TAG,"Setting motor speed to saved setting of %.1f rpm", speed);
+        } else {
+            speed = NORMAL_MOTOR_SPEED;
+            ESP_LOGI(TAG,"Setting motor speed to normal setting of %.1f rpm", speed);
+        }
+        blinds_set_speed(speed);
+    }    
 
     // Console and temp & humidity sensor loop
     uint32_t sensor_timestamp = iot_timestamp();

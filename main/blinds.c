@@ -29,14 +29,7 @@ QueueHandle_t  blinds_queue = NULL;
 
 #define MAX_VERSION_LENGTH 6
 
-/*
-    Custom motor firmware allows:
-        - setting motor speed
-        - higher granularity in motor position (and target position)
-        - quering additional variables (calibrating-flag, maximum and full curtain lengths)
-    See https://github.com/mjuhanne/fyrtur-motor-board
-*/
-motor_firmware_status_t motor_firmware_status;
+motor_firmware_status_t motor_firmware_status;  // motor firmware status (not detected / original / custom)
 
 char version[MAX_VERSION_LENGTH];
 
@@ -65,7 +58,7 @@ int blinds_orientation;
 
 blinds_direction_t blinds_direction = DIRECTION_STOPPED;		// current direction the motor is moving
 
-float blinds_revs_left; 	// When moving 
+float blinds_revs_left; 	// Used when moving with steps and predefined number of revolutions
 float blinds_target_position = -1;	// target position (in motor position units e.g. between 0% and 100%)
 
 bool blinds_force_small_steps = false;	// use quieter small movements
@@ -73,25 +66,11 @@ bool blinds_override_limits = false;	// use movement commands overriding the upp
 
 float blinds_revs;			// Revolutions since last stewise move command. Just for debugging purposes.. 
 
-/*
- Keep track how much blinds are past the maximum limit (units are revolutions. 
- This is accurate since it is updated with discrete stepwise motor movements of which we know the actual revolutions
-*/
-float blinds_extra_revs = 0; 
-
 unsigned long last_poll_timestamp;
 unsigned long last_cmd_timestamp;
 unsigned long last_move_cmd_timestamp;
 unsigned long next_move_cmd_timestamp;
 unsigned long last_status_timestamps[MAX_STATUS_REGISTERS];
-
-/*
- When using default firmware, the motor acknowledges and reports the target position with granularity of only 1% (integer units). 
- Therefore after reaching the integer position,  we go (if needed) the rest of the way (fractional part) 
- with discrete steps (90, 17.14 or 6.316 degrees). The finetune_threshold is compared to
- abs(reported_motor_position - target_position) and uses the same scale as motor position (0-100% degrees). 
- */
-float finetune_threshold = 1.0;
 
 // 171 (GEAR RATIO) * (13 + 265.0/360)(revolutions) * 4 (interrupt ticks per revolution)
 #define FYRTUR_ORIGINAL_FULL_LENGTH 9396
@@ -197,17 +176,7 @@ void blinds_process_status( int speed, float pos ) {
     blinds_direction_t old_direction = blinds_direction;
 
     if (blinds_target_position != -1) {
-        if (blinds_status == BLINDS_MOVING) { 
-            if (motor_firmware_status == ORIGINAL_FW) {
-                int target_pos_integer = blinds_target_position;
-                if (blinds_target_position - (float)target_pos_integer > 0.01) {
-                    ESP_LOGW(TAG, "Reaching target! Moving additional %.1f%% by small steps.", blinds_target_position - (float)target_pos_integer );
-                    blinds_status = BLINDS_MOVING_STEPS; // move by little steps the rest of the way
-                    blinds_override_limits = true; // use forceable movement commands to avoid accidentally tripping continous movement when using cmd_up_17 at pos 0x00..
-                    next_move_cmd_timestamp = iot_timestamp() + 1000;
-                }
-            }
-        } else if (blinds_status == BLINDS_MOVING_STEPS) { 
+        if (blinds_status == BLINDS_MOVING_STEPS) { 
             if ( ( (blinds_direction == DIRECTION_UP) && (blinds_motor_pos <= blinds_target_position ) ) ||
                  ( (blinds_direction == DIRECTION_DOWN) && (blinds_motor_pos >= blinds_target_position ) ) ) {
                 ESP_LOGW(TAG, "Reached target! Stopped after %.1f stepwise revolutions..", blinds_revs);
@@ -241,10 +210,6 @@ void blinds_process_status( int speed, float pos ) {
         blinds_target_position = -1;
     }
 
-    if (blinds_motor_pos < 100) {
-        blinds_extra_revs = 0;
-    }
-
     if (blinds_status != old_status) {
         blinds_variable_updated(BLINDS_STATUS);        
     }
@@ -252,9 +217,9 @@ void blinds_process_status( int speed, float pos ) {
         blinds_variable_updated(BLINDS_DIRECTION);        
     }
  
-    ESP_LOGI(TAG,"STATUS:%s, st_bits 0x%x, %1.1fV, SPD %d RPM, POS %1.f, STEPW_REVS %.2f XTRA_REVS %.2f TARGET %.2f", 
+    ESP_LOGI(TAG,"STATUS:%s, st_bits 0x%x, %1.1fV, SPD %d RPM, POS %1.f, STEPW_REVS %.2f TARGET %.2f", 
         blinds_status2txt[blinds_status], blinds_battery_status, blinds_voltage, blinds_speed, blinds_motor_pos, 
-        blinds_revs, blinds_extra_revs, blinds_target_position );
+        blinds_revs, blinds_target_position );
 }
 
 
@@ -329,14 +294,12 @@ int blinds_task_move_step() {
 			last_move_cmd_timestamp = iot_timestamp();
 			// Original firmware cannot handle frequent move commands so lets
 			// try to estimate when we are allowed to send the next one
-			next_move_cmd_timestamp = iot_timestamp() + 500 + revs*3000;
+			next_move_cmd_timestamp = iot_timestamp() + 300 + revs*3000;
 
 			blinds_task_read_status_reg(STATUS_REG_1);
 
 	        ESP_LOGI(TAG,"Stepwise movement of %.2f degrees", revs*360);
 
-	        if (blinds_motor_pos == 0x64)
-	            blinds_extra_revs += blinds_direction*revs;
             blinds_revs += revs;
 
 	        blinds_revs_left -= revs;
@@ -361,13 +324,11 @@ int blinds_task_move( int direction, float revs, float target_position, bool for
     blinds_direction_t old_direction = blinds_direction;
     int old_target_pos = blinds_target_position;
     blinds_status_t old_status = blinds_status;
-    if ( (revs>0) || force_small_steps || ( (motor_firmware_status == ORIGINAL_FW) && override_limits) ||
-    	( (motor_firmware_status == ORIGINAL_FW) && (target_position != -1) && (abs(blinds_motor_pos-target_position) < finetune_threshold) ) ) {
+    if ( (revs>0) || force_small_steps || ( (motor_firmware_status == ORIGINAL_FW) && override_limits) ) {
     	// Here we use smaller steps because of the following reasons:
     	//	- we want to turn specific amount of revolutions
-    	//	- we want quieter operation (handy with original fw)
+        //  - using small steps was requested
     	//	- we need to move outside lower limit (force-flag) when using original firmware
-    	//	- we want to finetune position when using original firmware
     	ESP_LOGI(__func__,"Starting stepwise movement");
         blinds_direction = direction;
         blinds_revs_left = revs;
@@ -959,7 +920,7 @@ void blinds_process_status_reg_2( int status_index, uint8_t * bytes, int len ) {
 
 
 /*
-  For detailed information about communication protocol, see fyrtyr motor board firmware documentation 
+  For detailed information about communication protocol, see Fyrtur motor board firmware documentation 
   (https://github.com/mjuhanne/fyrtur-motor-board)
 */
 void blinds_uart_task(void *pvParameter) {
