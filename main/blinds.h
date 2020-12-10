@@ -24,7 +24,7 @@ typedef enum blinds_direction_ {
 	DIRECTION_DOWN = 1
 } blinds_direction_t;
 
-typedef enum blinds_cmd_type {
+typedef enum blinds_cmd_t {
 	blinds_cmd_move = 0,
 	blinds_cmd_go_to,
 	blinds_cmd_set_speed,
@@ -34,20 +34,25 @@ typedef enum blinds_cmd_type {
 	blinds_cmd_set_max_length,
 	blinds_cmd_set_full_length,
 	blinds_cmd_status,
-	blinds_cmd_raw,
+	blinds_cmd_send_raw,
 	blinds_cmd_ext_status,
 	blinds_cmd_set_minimum_voltage,
 	blinds_cmd_set_location,
 	blinds_cmd_go_to_location,
 	blinds_cmd_set_auto_cal,
 	blinds_cmd_reset_full_length,
-	blinds_cmd_set_orientation
-} blinds_cmd_type;
+	blinds_cmd_set_orientation,
+	blinds_cmd_set_stall_detection_timeout,
+	blinds_cmd_set_max_motor_current,
+	blinds_cmd_toggle_orientation,
+	blinds_cmd_reset_orientation
+} blinds_cmd_t;
 
 typedef enum blinds_variable_t {
 	BLINDS_POSITION = 0,
 	BLINDS_SPEED,
 	BLINDS_VOLTAGE,
+	BLINDS_MOTOR_CURRENT,
 	BLINDS_LOCATION,
 	BLINDS_TARGET_LOCATION,
 	BLINDS_MOTOR_STATUS,
@@ -66,13 +71,14 @@ typedef enum blinds_orientation_t {
 } blinds_orientation_t;
 
 typedef struct blinds_msg {
-    blinds_cmd_type cmd;
-    blinds_direction_t direction;
-    float position, revs;
-    int location, speed;
-    bool override_limits;
-    bool force_small_steps;
-    uint8_t cmd_byte1, cmd_byte2;
+    blinds_cmd_t cmd;
+    //blinds_direction_t direction;
+    //float position, revs;
+    int int_param_1, int_param_2, int_param_3;
+    float float_param_1;
+    //bool override_limits;
+    //bool force_small_steps;
+    //uint8_t cmd_byte1, cmd_byte2;
 } blinds_msg;
 
 typedef enum status_register_t {
@@ -88,7 +94,8 @@ typedef enum status_register_t {
     EXT_LIMIT_STATUS_REG = 7,
     EXT_DEBUG_REG = 8,
     EXT_SENSOR_DEBUG_REG = 9,
-    MAX_STATUS_REGISTERS = 10,
+    EXT_TUNING_PARAMS_REG = 10,
+    MAX_STATUS_REGISTERS = 11,
 } status_register_t;
 
 void blinds_init();
@@ -126,6 +133,8 @@ int blinds_set_default_speed(int speed);
 int blinds_set_minimum_voltage(float voltage);
 int blinds_set_auto_cal(bool enabled);
 int blinds_set_orientation( blinds_orientation_t orientation );
+int blinds_toggle_orientation();
+int blinds_reset_orientation();
 int blinds_go_to_location( int location );
 int blinds_get_target_position();
 int blinds_get_location();
@@ -135,6 +144,7 @@ int blinds_get_max_length();
 int blinds_get_target_speed();
 int blinds_get_calibration_status();
 int blinds_get_orientation();
+int blinds_get_current();
 const char * blinds_get_motor_status_str();
 char * blinds_get_version();
 

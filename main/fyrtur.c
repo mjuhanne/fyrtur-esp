@@ -215,6 +215,31 @@ int node_handle_mqtt_msg(void * arg) {
                 ESP_LOGE(TAG,"force_move_down: number of revolutions not defined!");
                 mqtt_publish_error("Number of revolutions not defined!");
             }
+        } else if (strcmp(msg->subtopic,"toggle_orientation")==0) {
+                blinds_toggle_orientation();
+        } else if (strcmp(msg->subtopic,"reset_orientation")==0) {
+                blinds_reset_orientation();
+        } else if (strcmp(msg->subtopic,"button")==0) {
+            if (msg->arg) {
+                int btn = atoi(msg->arg);
+                if ( (btn == 1) || (btn == 2) ) {
+                    if (msg->data) {
+                        if (strcmp(msg->data,"pushed")==0) {
+                            handle_single_btn_click(btn-1);
+                        } else if (strcmp(msg->data,"held")==0) {
+                            handle_long_btn_press(btn-1);
+                        } else if (strcmp(msg->data,"released")==0) {
+                            handle_long_btn_release(btn-1);
+                        }
+                    } else {
+                        ESP_LOGE(TAG,"button: invalid data!");
+                    }
+                } else {
+                    ESP_LOGE(TAG,"button: invalid button (%s)!", msg->arg);
+                }
+            } else {
+                ESP_LOGE(TAG,"button: no button defined!");                
+            }
         } else {
             ESP_LOGE(TAG,"Invalid subtopic: '%s'", msg->subtopic);
             mqtt_publish_error("Invalid subtopic!");
@@ -238,6 +263,11 @@ void blinds_variable_updated( blinds_variable_t variable ) {
 
         case BLINDS_VOLTAGE: {
             mqtt_publish_float("cover","voltage", blinds_get_voltage());
+        }
+        break;
+
+        case BLINDS_MOTOR_CURRENT: {
+            mqtt_publish_float("cover","current", blinds_get_current());
         }
         break;
 
@@ -313,10 +343,7 @@ void node_publish_ha_cfg() {
     }
 }
 
-void node_handle_mqtt_connected() {
-    ESP_LOGD(TAG, "node_handle_mqtt_connected - stack: %d", uxTaskGetStackHighWaterMark(NULL));
-
-    node_publish_ha_cfg();
+void node_publish_node_info() {
     mqtt_publish_ext("node", "version", NODE_BUILD_VERSION, true);
 
     motor_firmware_status_t fw_status = blinds_get_firmware_status();
@@ -336,6 +363,7 @@ void node_handle_mqtt_connected() {
             blinds_variable_updated(BLINDS_CALIBRATING_STATUS);
             blinds_variable_updated(BLINDS_MAX_LEN);
             blinds_variable_updated(BLINDS_FULL_LEN);
+            blinds_variable_updated(BLINDS_MOTOR_CURRENT);
         }
 
     } else if (fw_status == ORIGINAL_FW) {
@@ -349,11 +377,28 @@ void node_handle_mqtt_connected() {
     }
 }
 
+void node_handle_mqtt_connected() {
+    ESP_LOGD(TAG, "node_handle_mqtt_connected - stack: %d", uxTaskGetStackHighWaterMark(NULL));
+    node_publish_ha_cfg();
+    node_publish_node_info();
+}
+
 int node_handle_name_change(void * arg) {
     node_publish_ha_cfg();
+    node_publish_node_info();
     return 0;
 }
 
+int node_handle_pre_name_change(void * arg) {
+    // Send empty configuration message to Home assistant in order to remove associations to old node name
+    mqtt_publish_ha_cfg("cover", "config", NULL, 0);
+
+    if (sensor_detected) {
+        mqtt_publish_ha_cfg("sensor", "temperature/config", NULL, 0);
+        mqtt_publish_ha_cfg("sensor", "humidity/config", NULL, 0);
+    }
+    return 0;
+}
 
 int node_handle_ota( void * arg ) {
     IOT_OTA_STARTING();
@@ -470,6 +515,8 @@ void app_main()
     iot_set_callback( IOT_HANDLE_MQTT_MSG, node_handle_mqtt_msg);
     iot_set_callback( IOT_HANDLE_SET_VARIABLE, node_handle_mqtt_set);
     iot_set_callback( IOT_HANDLE_CONN_STATUS, node_handle_conn_status);
+    iot_set_callback( IOT_HANDLE_PRE_NAME_CHANGE, node_handle_pre_name_change);
+    iot_set_callback( IOT_HANDLE_NAME_CHANGE, node_handle_name_change);
     iot_set_callback( IOT_HANDLE_FACTORY_RESET, node_handle_factory_reset);
     iot_set_callback( IOT_HANDLE_ERROR, node_handle_error);
 

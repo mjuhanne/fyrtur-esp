@@ -34,10 +34,6 @@ int saved_target_speed;
 
 static xQueueHandle gpio_evt_queue = NULL;
 
-#define MAX_BUTTONS 2
-#define BTN_1 0  // "UP" button
-#define BTN_2 1 // "DOWN" button
-
 unsigned long btn_timestamps[MAX_BUTTONS];
 unsigned long last_short_click_timestamps[MAX_BUTTONS];
 int btn_states[MAX_BUTTONS];

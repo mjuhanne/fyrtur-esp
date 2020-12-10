@@ -40,6 +40,10 @@
 
 #define SLOW_MOVEMENT_SPEED	6	// in rpm
 
+#define MAX_BUTTONS 2
+#define BTN_1 0  // "UP" button
+#define BTN_2 1 // "DOWN" button
+
 // --- Variables for handling keeping both buttons pressed
 #define START_AP_THRESHOLD           2000
 #define FACTORY_RESET_IMMINENT_THRESHOLD 3500
@@ -123,6 +127,9 @@
 //#define NODE_USES_NEOPIXEL
 
 void interface_init();
+void handle_single_btn_click( int button );
+void handle_long_btn_press( int button );
+void handle_long_btn_release( int button );
 
 void node_handle_led_set( uint8_t index, uint8_t r, uint8_t g, uint8_t b);
 

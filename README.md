@@ -10,13 +10,13 @@ First, why would one want to re-invent the wheel and replace the Ikea wireless m
 * Avoid finicky Zigbee pairing operation (first pair the remote with the hub, then with the signal repeater, then with the blinds and hope that everything turns out fine.. which hasn't been my experience with the Ikea Trådfri and Home Smart app)
 * Avoid unstable Zigbee normal mode operation (sometimes the blinds would go to deep sleep and would not wake up until manually woken up with a button press on the blinds. Also, the latency can vary from tolerable to awful)
 * MQTT and Home Assistant support including MQTT auto-discovery functionality for automatic detection of Fyrtur nodes
+* Allow the use of "front roll" configuration** (curtain rod flipped 180 degrees) to give 2-3cm space between window and the blinds
 * Enable the use of blinds longer than 195cm!
 * Possibility to integrate temperature/humidity sensors or maybe a window break-in sensor?
 
 There also exists [a custom firmware for the Fyrtur motor module](https://github.com/mjuhanne/fyrtur-motor-board) that makes it possible to have more finer control of the motor unit along with several enhancements:
 
  * **Allow setting custom motor speed.** The full speed with original FW is a bit too noisy for my ears, especially when used to control morning sunlight in the bedroom. Now it's possible to set the speed to 3 RPM and enjoy the completely silent operation, waking up to the sunlight instead of whirring noise :)
- * **Allow the use of "front roll" configuration** (curtain rod flipped 180 degrees) to give 2-3cm space between window and the blinds
  * **Enable the use of 5-6 volt DC source.** Original firmware was intended to be used with rechargeable battery which was protected from under-voltage by ceasing operation when voltage drops below 6 VDC. Conversely it is recommended that our custom firmware is used with the ESP WiFi module plugged to DC adapter. In this case the low voltage limit for motor operation can be ignored, mitigating the need to shop for the harder-to-get 6-7.5 volt adapters. The minimum operating voltage check can be enabled though if one wants to use this with the original Zigbee module with battery.
  * **Smoother movement.** The blinds accelerate and decelerate more smoothly than with original FW
  * **More stable position handling.** Original firmware starts losing its position gradually if it isn't calibrated every now and then by rolling the blinds to up-most position. The custom firmware retains its position much better in the long run.
@@ -165,9 +165,11 @@ Other MQTT remote control topics:
 - `/home/control/fyrtur-e975c1/set/minimum_voltage`
 	- Payload: minimum operating voltage
 	- The original Fyrtur module uses 7.4V battery which should be protected from under-voltage. The new module is intended to be supplied by 5-8 volt DC adapter so there's no need for battery protection anymore. The default setting is 0 (protection disabled). If needed, one can set the minimum operating voltage under which the motor will not be powered. **Note that this restriction will apply only to the DC motor, but not the STM32 chip inside motor module nor the ESP module! Using DC adapter is still highly recommended!**
-- `/home/control/fyrtur-e975c1/set/orientation`
-	- Payload: 0 (normal/back roll configuration), 1 (reverse/front roll configuration)
+- `/home/control/fyrtur-e975c1/toggle_orientation`
+	- Toggles between standard (back roll) configuration and reverse (front roll) configuration.
 	- If you want to flip the curtain rod 180 degrees to "front roll" configuration, you can use this command. It's best to first use this command to change the software setting before doing the actual physical flipping, or otherwise be prepared to stop the blinds' automatic calibration attempt during power up by pressing UP or DOWN button (blinds would be rotating in wrong direction without any constraints..)
+- `/home/control/fyrtur-e975c1/reset_orientation`
+	- Reset orientation back to standard (back roll) configuration
 
 #### Temperature and humidity sensor
 If *Fyrtur-esp* detects the external SI7021 / HTU21D temperature and humidity sensor, it will broadcast its measurements with following topics:
@@ -229,6 +231,17 @@ with JSON payload:
 	"state_topic": "/home/sensor/fyrtur-e975c1/humidity"
 }
 ```
+
+#### Using Ikea Fyrtur remotes 
+
+Since ESP32/8266 doesn't have support Zigbee protocol the original remotes cannot be used to control the blinds directly. However they can be still utilized using [Zigbee2MQTT](https://www.zigbee2mqtt.io/) with a suitable Zigbee adapter or Samsung SmartThings Hub via [SmartThings MQTT Bridge](https://github.com/stjohnjohnson/smartthings-mqtt-bridge). The latter is pretty complicated and cannot be forced into local use without cloud / internet access. 
+
+Pair the Ikea remotes (or other remotes if you wish) with the Zigbee hub/router and configure them to send MQTT messages as below to simulate the original remote functionality:
+```
+/home/control/[node name]/button/[button number]/state  (payload: pushed/held/released)
+```
+Currently double-click is not yet supported so (re)setting lower limit is to be achieved with buttons on the blinds (or the related MQTT messages).
+	
 
 #### OTA update
 The node-framework supports OTA updates via HTTP. The process is initiated with a MQTT topic:
