@@ -260,6 +260,8 @@ void blinds_process_status( int speed, float pos ) {
 
 
 void blinds_task_read_status_reg( status_register_t status_reg ) {
+    ESP_LOGW(TAG, "blinds_task_read_status_reg - Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+
 	if (status_reg == STATUS_REG_1)
 	    blinds_send_cmd( cmd_status );
 	else if (status_reg == STATUS_REG_2)
@@ -1390,8 +1392,8 @@ void blinds_init() {
     xTaskCreatePinnedToCore(&blinds_task, "blinds_task", 4096, NULL, 5, NULL, BLINDS_TASK_CORE);
     xTaskCreatePinnedToCore(&blinds_uart_task, "blinds_uart_task", 4096, NULL, 5, NULL, BLINDS_UART_TASK_CORE);
 #else
-    xTaskCreatePinnedToCore(&blinds_task, "blinds_task", 1024, NULL, 5, NULL, BLINDS_TASK_CORE);
-    xTaskCreatePinnedToCore(&blinds_uart_task, "blinds_uart_task", 1024, NULL, 5, NULL, BLINDS_UART_TASK_CORE);
+    xTaskCreatePinnedToCore(&blinds_task, "blinds_task", 2048, NULL, 5, NULL, BLINDS_TASK_CORE);
+    xTaskCreatePinnedToCore(&blinds_uart_task, "blinds_uart_task", 1536, NULL, 5, NULL, BLINDS_UART_TASK_CORE);
 #endif
 
     // Send dummy status query message (since motor unit might not receive the 1st byte correctly after power on)

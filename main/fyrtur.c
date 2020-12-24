@@ -14,6 +14,8 @@
 #include "node-framework.h"
 #include "hw_interface.h"
 #include "blinds.h"
+#include "mqtt_manager.h"
+
 #ifdef ESP32
 extern void initialize_console();
 extern bool run_console();
@@ -176,12 +178,21 @@ int node_handle_mqtt_set(void * arg) {
     } else {
         ret = IOT_VARIABLE_NOT_FOUND;
     }
+
+    if ( (ret == IOT_VARIABLE_NOT_FOUND) || (ret == IOT_INVALID_VALUE) ) {
+        IOT_MQTT_MSG_ERROR_LED();
+    } else {
+        IOT_MQTT_MSG_OK_LED();
+    }
+
+
     return ret;
 }
 
 
 int node_handle_mqtt_msg(void * arg) {
     iot_mqtt_msg_t * msg = (iot_mqtt_msg_t*)arg;
+    int err = 0;
     if (strcmp(msg->device_type,"control")==0) {
         if (strcmp(msg->subtopic,"command")==0) {
             if (msg->data) {
@@ -193,9 +204,11 @@ int node_handle_mqtt_msg(void * arg) {
                     blinds_stop();
             	else {
                     ESP_LOGE(TAG,"command: invalid cmd!");
+                    err = 1;
             	}
             } else {
                 ESP_LOGE(TAG,"command: no data!");
+                err = 1;
             }
         } else if (strcmp(msg->subtopic,"reset")==0) {
             blinds_reset_max_length();
@@ -206,6 +219,7 @@ int node_handle_mqtt_msg(void * arg) {
             } else {
                 ESP_LOGE(TAG,"force_move_up: number of revolutions not defined!");
                 mqtt_publish_error("Number of revolutions not defined!");
+                err = 1;
             }
         } else if (strcmp(msg->subtopic,"force_move_down")==0) {
             if (msg->data) {
@@ -214,6 +228,7 @@ int node_handle_mqtt_msg(void * arg) {
             } else {
                 ESP_LOGE(TAG,"force_move_down: number of revolutions not defined!");
                 mqtt_publish_error("Number of revolutions not defined!");
+                err = 1;
             }
         } else if (strcmp(msg->subtopic,"toggle_orientation")==0) {
                 blinds_toggle_orientation();
@@ -233,20 +248,31 @@ int node_handle_mqtt_msg(void * arg) {
                         }
                     } else {
                         ESP_LOGE(TAG,"button: invalid data!");
+                        err = 1;
                     }
                 } else {
                     ESP_LOGE(TAG,"button: invalid button (%s)!", msg->arg);
+                    err = 1;
                 }
             } else {
-                ESP_LOGE(TAG,"button: no button defined!");                
+                ESP_LOGE(TAG,"button: no button defined!");
+                err = 1;
             }
         } else {
             ESP_LOGE(TAG,"Invalid subtopic: '%s'", msg->subtopic);
             mqtt_publish_error("Invalid subtopic!");
+            err = 1;
         }
     } else {
         ESP_LOGE(TAG,"Invalid device_type: '%s'", msg->device_type);
         mqtt_publish_error("Invalid device_type!");
+        err = 1;
+    }
+
+    if (!err) {
+        IOT_MQTT_MSG_OK_LED();
+    } else {
+        IOT_MQTT_MSG_ERROR_LED();
     }
     return 0;
 }
@@ -381,6 +407,9 @@ void node_handle_mqtt_connected() {
     ESP_LOGD(TAG, "node_handle_mqtt_connected - stack: %d", uxTaskGetStackHighWaterMark(NULL));
     node_publish_ha_cfg();
     node_publish_node_info();
+    
+    // subscribe to all fyrtur nodes
+    mqtt_manager_subscribe("/home/control/fyrtur-blinds/#");
 }
 
 int node_handle_name_change(void * arg) {

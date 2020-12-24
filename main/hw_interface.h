@@ -92,6 +92,9 @@
 
 #define IOT_OTA_FAILED() iot_led_burst(STATUS_LED, 30, 0, 0, 300, 300, 5, 3, 1000, 0);
 
+#define IOT_MQTT_MSG_OK_LED() iot_led_blink(STATUS_LED, IOT_MQTT_LED_COLOR, 100, MQTT_LED_PRIORITY);
+#define IOT_MQTT_MSG_ERROR_LED() iot_led_pulse(STATUS_LED, IOT_MQTT_LED_COLOR, 100, 100, 2, MQTT_LED_PRIORITY );
+
 
 
 
