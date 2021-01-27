@@ -42,7 +42,8 @@ extern bool run_console();
 #define MQTT_SETTING_DEFAULT_MOTOR_SPEED "default_speed"
 #define MQTT_SETTING_MINIMUM_OPERATING_VOLTAGE "minimum_voltage"
 #define MQTT_SETTING_DIAGNOSTICS "diagnostics"
-#define MQTT_SETTING_SENSOR_BROADCAST_INTERVAL "sensor_broadcast_interval"
+#define MQTT_SETTING_SENSOR_BROADCAST_INTERVAL "sensor_interval"
+#define MQTT_SETTING_CUSTOM_BUTTON_TOPIC "button_topic"
 
 // Template for configuration topic to be used with Home Assistant's MQTT discovery.
 // device_type: cover
@@ -81,6 +82,7 @@ static bool sensor_detected = false;
 static uint32_t sensor_broadcast_interval;
 static bool diagnostics = false;    // if this is set, more verbose diagnostics data is sent via MQTT
 
+char * custom_button_topic = NULL;
 
 int node_handle_mqtt_set(void * arg) {
     iot_set_variable_return_code_t ret = IOT_OK;
@@ -175,6 +177,21 @@ int node_handle_mqtt_set(void * arg) {
             mqtt_publish_error("Invalid orientation setting!");
             ret = IOT_INVALID_VALUE;
         }
+    } else if (strcmp(var->name,MQTT_SETTING_CUSTOM_BUTTON_TOPIC)==0) {
+        if (strlen(var->data) > 1) {
+            if (custom_button_topic != NULL) {
+                free(custom_button_topic);
+                custom_button_topic = NULL;
+            }
+            custom_button_topic = malloc(strlen(var->data));
+            strcpy(custom_button_topic, var->data);
+            mqtt_manager_subscribe(custom_button_topic);
+            ret = IOT_SAVE_VARIABLE;
+        } else {
+            ESP_LOGE(TAG,"Invalid custom button topic %s!", var->data);
+            mqtt_publish_error("Invalid custom button topic!");
+            ret = IOT_INVALID_VALUE;
+        }
     } else {
         ret = IOT_VARIABLE_NOT_FOUND;
     }
@@ -187,6 +204,26 @@ int node_handle_mqtt_set(void * arg) {
 
 
     return ret;
+}
+
+
+// Handle raw MQTT topic before any node-framework parsing (device_type, node_name etc)
+int node_handle_generic_mqtt_msg(void * arg) {
+    iot_mqtt_msg_t * msg = (iot_mqtt_msg_t*)arg;
+    if (custom_button_topic) {
+        if (strcmp(msg->arg, custom_button_topic)==0) {
+            // we received button push topic
+            if (strstr(msg->data,"open") != NULL) {
+                handle_single_btn_click(0);
+            } else if (strstr(msg->data,"close") != NULL) {
+                handle_single_btn_click(1);
+            } else if (strstr(msg->data,"stop") != NULL) {
+                // we don't receive "button held down" event from remotes but instead a "stop" event, so regard it as so
+                blinds_stop();
+            }
+        }
+    }
+    return 0;
 }
 
 
@@ -210,7 +247,7 @@ int node_handle_mqtt_msg(void * arg) {
                 ESP_LOGE(TAG,"command: no data!");
                 err = 1;
             }
-        } else if (strcmp(msg->subtopic,"reset")==0) {
+        } else if (strcmp(msg->subtopic,"reset_max_length")==0) {
             blinds_reset_max_length();
         } else if (strcmp(msg->subtopic,"force_move_up")==0) {
             if (msg->data) {
@@ -410,6 +447,10 @@ void node_handle_mqtt_connected() {
     
     // subscribe to all fyrtur nodes
     mqtt_manager_subscribe("/home/control/fyrtur-blinds/#");
+
+    // subscribe to custom Fyrtur remote topic
+    if (custom_button_topic != NULL)
+        mqtt_manager_subscribe(custom_button_topic);
 }
 
 int node_handle_name_change(void * arg) {
@@ -542,6 +583,7 @@ void app_main()
     // Callbacks for node framework events
     iot_set_callback( IOT_HANDLE_OTA, node_handle_ota);
     iot_set_callback( IOT_HANDLE_MQTT_MSG, node_handle_mqtt_msg);
+    iot_set_callback( IOT_HANDLE_GENERIC_MQTT_MSG, node_handle_generic_mqtt_msg);
     iot_set_callback( IOT_HANDLE_SET_VARIABLE, node_handle_mqtt_set);
     iot_set_callback( IOT_HANDLE_CONN_STATUS, node_handle_conn_status);
     iot_set_callback( IOT_HANDLE_PRE_NAME_CHANGE, node_handle_pre_name_change);
@@ -558,6 +600,14 @@ void app_main()
         }
         sensor_broadcast_interval *= 1000;   // interval is stored as milliseconds
     }
+
+    custom_button_topic = iot_get_nvs_str(MQTT_SETTING_CUSTOM_BUTTON_TOPIC);
+    if (custom_button_topic) {
+        ESP_LOGI(TAG,"Setting custom button topic to '%s'", custom_button_topic);
+    } else {
+        ESP_LOGW(TAG,"No custom button MQTT topic found");        
+    }
+
 
     iot_get_nvs_bool(MQTT_SETTING_DIAGNOSTICS, &diagnostics);
     ESP_LOGI(TAG,"Setting verbose motor MQTT diagnostics to %d", diagnostics);

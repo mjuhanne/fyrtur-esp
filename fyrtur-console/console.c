@@ -36,6 +36,8 @@ static struct {
 /** Arguments used by 'node' function */
 static struct {
     struct arg_str *arg1;
+    struct arg_str *arg2;
+    struct arg_str *arg3;
     struct arg_end *end;
 } node_cmd_args;
 
@@ -160,6 +162,7 @@ static int console_blinds_cmd(int argc, char **argv)
         vTaskDelay(200 / portTICK_PERIOD_MS);
         blinds_read_status_reg(EXT_SENSOR_DEBUG_REG);
         vTaskDelay(200 / portTICK_PERIOD_MS);
+        blinds_read_status_reg(EXT_TUNING_PARAMS_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "ext_status")==0) {
         blinds_read_status_reg(EXT_STATUS_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "limits")==0) {
@@ -232,6 +235,17 @@ static int console_node_cmd(int argc, char **argv)
         wifi_manager_send_message(WM_ORDER_START_AP, NULL);
     } else if (strcmp(node_cmd_args.arg1->sval[0], "stop_ap")==0) {
         wifi_manager_send_message(WM_ORDER_STOP_AP, NULL);
+    } else if (strcmp(node_cmd_args.arg1->sval[0], "connect")==0) {
+        if (argc == 4) {
+            wifi_config_t* config = wifi_manager_get_wifi_sta_config();
+            memset(config, 0x00, sizeof(wifi_config_t));
+            memcpy(config->sta.ssid, node_cmd_args.arg2->sval[0], strlen(node_cmd_args.arg2->sval[0])+1);
+            memcpy(config->sta.password, node_cmd_args.arg3->sval[0], strlen(node_cmd_args.arg3->sval[0])+1);
+            ESP_LOGI(TAG, "ssid: %s, password: %s", node_cmd_args.arg2->sval[0], node_cmd_args.arg3->sval[0]);
+            wifi_manager_connect_async();
+        } else {
+            ESP_LOGE(TAG,"Invalid number of args(%d)", argc);
+        }
     }
     return 0;
 }
@@ -318,7 +332,7 @@ void initialize_console()
     blinds_cmd_args.arg1 = arg_str1(NULL, NULL, "<arg1>", "command");
     blinds_cmd_args.arg2 = arg_str0(NULL, NULL, "<arg2>", "ARG #1 of command");
     blinds_cmd_args.arg3 = arg_str0(NULL, NULL, "<arg3>", "ARG #2 of command");
-    blinds_cmd_args.end = arg_end(2);
+    blinds_cmd_args.end = arg_end(0);
 
     const esp_console_cmd_t blinds_cmd = {
         .command = "blinds",
@@ -331,7 +345,9 @@ void initialize_console()
     ESP_ERROR_CHECK( esp_console_cmd_register(&blinds_cmd) );
 
     node_cmd_args.arg1 = arg_str1(NULL, NULL, "<arg1>", "command");
-    node_cmd_args.end = arg_end(2);
+    node_cmd_args.arg2 = arg_str0(NULL, NULL, "<arg2>", "ARG #1 of command");
+    node_cmd_args.arg3 = arg_str0(NULL, NULL, "<arg3>", "ARG #2 of command");
+    node_cmd_args.end = arg_end(0);
 
     // Maintenance commands for node. 
     const esp_console_cmd_t node_cmd = {

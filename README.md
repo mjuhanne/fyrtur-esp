@@ -132,7 +132,7 @@ Fyrtur blinds can then be controlled manually by using the buttons or via MQTT p
 - `/home/control/fyrtur-e975c1/force_move_down`
 	- Payload: Number of curtain rod revolutions to move
 	- Force movement outside the (maximum or full) curtain length.
-- `/home/control/fyrtur-e975c1/reset`
+- `/home/control/fyrtur-e975c1/reset_max_length`
 	- Reset the current (user defined) maximum curtain length to full (factory defined) curtain length and start calibration process by rewinding blinds to the topmost position.
 - `/home/control/fyrtur-e975c1/set/max_len`
 	- Set the maximum (user defined) curtain length to current position
@@ -170,6 +170,12 @@ Other MQTT remote control topics:
 	- If you want to flip the curtain rod 180 degrees to "front roll" configuration, you can use this command. It's best to first use this command to change the software setting before doing the actual physical flipping, or otherwise be prepared to stop the blinds' automatic calibration attempt during power up by pressing UP or DOWN button (blinds would be rotating in wrong direction without any constraints..)
 - `/home/control/fyrtur-e975c1/reset_orientation`
 	- Reset orientation back to standard (back roll) configuration
+- `/home/control/fyrtur-e975c1/button_topic`
+	- Is used to set a custom MQTT topic which the node will subscribe to and will receive events from Fyrtur remote
+	- If the remote event topic payload contains string 'open', it will mimic Up button press
+	- If the remote event topic payload contains string 'close', it will mimic Down button press
+	- If the remote event topic payload contains string 'stop', a stop command will be issued to Fyrtur engine
+	- For now, double click events are not supported
 
 #### Temperature and humidity sensor
 If *Fyrtur-esp* detects the external SI7021 / HTU21D temperature and humidity sensor, it will broadcast its measurements with following topics:
@@ -181,7 +187,7 @@ If *Fyrtur-esp* detects the external SI7021 / HTU21D temperature and humidity se
 
 The default broadcast interval is 10 seconds. This can be configured with MQTT:
 
-- `/home/control/fyrtur-e975c1/set/sensor_broadcast_interval`
+- `/home/control/fyrtur-e975c1/set/sensor_interval`
 	- Payload: interval in seconds (0 = broadcasting is disabled)
 
 #### MQTT Discovery

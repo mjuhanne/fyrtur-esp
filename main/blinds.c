@@ -411,14 +411,9 @@ int blinds_task_move( int direction, float revs, float target_position, bool for
             blinds_target_position = target_position;
     	} else {
 	        if (direction == DIRECTION_UP) {
-	            if (blinds_motor_pos > 0.1) {
-	                blinds_send_cmd( cmd_up );
-	                blinds_direction = DIRECTION_UP;
-		            blinds_target_position = 0;
-	            } else {
-	                ESP_LOGE(TAG,"Already up!");
-	                return 0;
-	            }
+                blinds_send_cmd( cmd_up );
+                blinds_direction = DIRECTION_UP;
+	            blinds_target_position = 0;
 	        } else {
                 if ( (motor_firmware_status == CUSTOM_FW) && (override_limits) ) {
                     blinds_send_cmd( cmd_ext_force_down );            
@@ -924,9 +919,9 @@ void blinds_process_ext_status_reg( int status, int current, int speed, float po
 }
 
 
-void blinds_process_tuning_params_reg( int slowdown_factor, int min_slowdown_speed, int stall_detection_timeout, int max_motor_current, int unused) {
-    ESP_LOGI(UART_TAG,"TUNING_PARAMS: slowdown_factor %d, min_slowdown_speed %d, stall_detection_timeout %d, max_motor_current %d mA, unused %d",
-        slowdown_factor, min_slowdown_speed, stall_detection_timeout, max_motor_current, unused);
+void blinds_process_tuning_params_reg( int slowdown_factor, int min_slowdown_speed, int stall_detection_timeout, int max_motor_current, int last_stalling_current) {
+    ESP_LOGI(UART_TAG,"TUNING_PARAMS: slowdown_factor %d, min_slowdown_speed %d, stall_detection_timeout %d, max_motor_current %d mA, last_stalling_current %d",
+        slowdown_factor, min_slowdown_speed, stall_detection_timeout, max_motor_current, last_stalling_current);
     last_status_timestamps[EXT_TUNING_PARAMS_REG] = iot_timestamp();
 }
 
@@ -1067,7 +1062,8 @@ void blinds_uart_task(void *pvParameter) {
                 } else {
                     checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
                     if (checksum == data[7]) {
-                        blinds_process_ext_location_reg( data[3]*256 + data[4], data[5]*256 + data[6]  );
+                        int16_t target_location = data[5]*256 + data[6]; // preserve sign 
+                        blinds_process_ext_location_reg( data[3]*256 + data[4], target_location  );
                         packet_state = PACKET_VALID;
                     } else {
                         packet_state = PACKET_INVALID;
@@ -1093,7 +1089,8 @@ void blinds_uart_task(void *pvParameter) {
                 } else {
                     checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
                     if (checksum == data[8]) {
-                        ESP_LOGW(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
+//                        ESP_LOGW(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
+                        ESP_LOGW(UART_TAG,"sensor debug bytes: c1 %d c2 %d c3 %d c4 %d c5 %d ", data[3]*8, data[4]*8, data[5]*8, data[6]*8, data[7]*8);
                         packet_state = PACKET_VALID;
                     } else {
                         packet_state = PACKET_INVALID;
