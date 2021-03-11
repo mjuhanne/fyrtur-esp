@@ -109,6 +109,10 @@
 #define TXD_PIN (GPIO_NUM_23)	// TX pin to Motor unit
 #define RXD_PIN (GPIO_NUM_5)	// RX pin from Motor unit
 
+// these are for debugging purposes and not normally connected. OTA updates should work without these if motor FW version is >0.8 
+#define RESET_PIN (GPIO_NUM_19)	
+#define BOOT0_PIN (GPIO_NUM_4) 
+
 #else	// ESP8266
 #define BTN1_GPIO 14 // Btn up
 #define BTN2_GPIO 0 // Btn down (doubles as download/flash button)

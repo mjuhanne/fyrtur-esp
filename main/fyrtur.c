@@ -17,8 +17,8 @@
 #include "mqtt_manager.h"
 
 #ifdef ESP32
-extern void initialize_console();
-extern bool run_console();
+#include "stm32ota.h"
+#include "console.h"
 #endif
 #include "si7021.h"
 
@@ -82,7 +82,19 @@ static bool sensor_detected = false;
 static uint32_t sensor_broadcast_interval;
 static bool diagnostics = false;    // if this is set, more verbose diagnostics data is sent via MQTT
 
+typedef enum {
+    STM32_OTA_TASK_NONE = 0,
+    STM32_OTA_TASK_FLASH,
+    STM32_OTA_TASK_TEST_SW, // bootloader entry test with software hw_method
+    STM32_OTA_TASK_TEST_HW, // bootloader entry test with hardware method (using RESET/BOOT0 pins). Just for debugging purposes
+} stm32_ota_task_t;
+
+stm32_ota_task_t stm32_ota_task = STM32_OTA_TASK_NONE;
+
 char * custom_button_topic = NULL;
+
+char * stm32_update_url = NULL;
+char * stm32_update_md5 = NULL;
 
 int node_handle_mqtt_set(void * arg) {
     iot_set_variable_return_code_t ret = IOT_OK;
@@ -183,7 +195,7 @@ int node_handle_mqtt_set(void * arg) {
                 free(custom_button_topic);
                 custom_button_topic = NULL;
             }
-            custom_button_topic = malloc(strlen(var->data));
+            custom_button_topic = malloc(strlen(var->data)+1);
             strcpy(custom_button_topic, var->data);
             mqtt_manager_subscribe(custom_button_topic);
             ret = IOT_SAVE_VARIABLE;
@@ -266,6 +278,59 @@ int node_handle_mqtt_msg(void * arg) {
                 ESP_LOGE(TAG,"force_move_down: number of revolutions not defined!");
                 mqtt_publish_error("Number of revolutions not defined!");
                 err = 1;
+            }
+        } else if (strcmp(msg->subtopic,"stm32update")==0) {
+            char * md5 = NULL;
+            if ( (msg->data) && (md5=strchr(msg->data,' ')) ) {
+                *md5 = 0;   // break msg->data into two strings
+                md5++;
+                if (stm32_update_url) {
+                    free(stm32_update_url);
+                    stm32_update_url = NULL;
+                }
+                if (stm32_update_md5) {
+                    free(stm32_update_md5);
+                    stm32_update_md5 = NULL;
+                }
+                stm32_update_url = malloc( strlen(msg->data)+ 1);
+                if (stm32_update_url) {
+                    strcpy(stm32_update_url, msg->data);
+                    if (strcmp(md5,"0") != 0) {
+                        stm32_update_md5 = malloc( strlen(md5) + 1);
+                        if (stm32_update_md5) {
+                            strcpy(stm32_update_md5, md5);
+                        } else {
+                            err = 1;
+                        }
+                    } else {
+                        ESP_LOGW(TAG,"stm32update: MD5 check omitted");
+                    }
+                } else {
+                    err = 1;                    
+                }
+
+                if (err != 1) {
+                    // defer firmware update to the main process
+                    stm32_ota_task = STM32_OTA_TASK_FLASH;
+                } else {
+                    ESP_LOGE(TAG,"stm32update: out of mem!");
+                    mqtt_publish_error("stm32update: out of mem!");
+                }
+
+            } else {
+                ESP_LOGE(TAG,"stm32update: both URL and md5 are needed!");
+                mqtt_publish_error("stm32update: both URL and md5 are needed!");
+                err = 1;
+            }
+        } else if (strcmp(msg->subtopic,"stm32info")==0) {
+            int hw_method = 0;
+            if (msg->data) {
+                hw_method = atoi(msg->data);
+            }
+            if (hw_method) {
+                stm32_ota_task = STM32_OTA_TASK_TEST_HW;
+            } else {
+                stm32_ota_task = STM32_OTA_TASK_TEST_SW;
             }
         } else if (strcmp(msg->subtopic,"toggle_orientation")==0) {
                 blinds_toggle_orientation();
@@ -480,6 +545,12 @@ void node_handle_ota_failed() {
     IOT_OTA_FAILED();
 }
 
+// only called after STM32 OTA
+void node_handle_ota_success() {
+    iot_led_set_priority(STATUS_LED, 0, 0, 0, -1); // release previously set priority lock
+    IOT_LED_OFF();
+}
+
 
 int node_handle_conn_status( void * arg) {
     iot_conn_status_t status = (iot_conn_status_t)arg;
@@ -549,7 +620,7 @@ void app_main()
 
 #ifdef ESP32
     // Init console access. This is just for debugging purposes and used only on ESP32 since ESP8266 has scarce memory
-    initialize_console();
+    start_console_task();
 #endif
 
     ESP_LOGW(TAG, "Stack: %d", uxTaskGetStackHighWaterMark(NULL));
@@ -624,6 +695,10 @@ void app_main()
         blinds_set_speed(speed);
     }    
 
+#ifdef ESP32
+    blinds_stm32_init(); // init STM32 OTA update engine
+#endif
+
     // Console and temp & humidity sensor loop
     uint32_t sensor_timestamp = iot_timestamp();
     while (1) {
@@ -655,9 +730,29 @@ void app_main()
             }
         }
 
-#ifdef ESP32
-        run_console();
-#endif
+        if (stm32_ota_task != STM32_OTA_TASK_NONE) {
+            node_handle_ota(NULL);
+
+            // if testing, the url and md5 strings are both NULL
+            if (blinds_stm32_ota(stm32_update_url, stm32_update_md5, (stm32_ota_task == STM32_OTA_TASK_TEST_HW))) {
+                // read and publish new firmware version and motor unit status
+                blinds_read_status_reg_blocking(EXT_STATUS_REG, 500);
+                blinds_read_status_reg_blocking(EXT_VERSION_REG, 500);
+                node_publish_node_info();
+                node_handle_ota_success();                
+            } else {
+                node_handle_ota_failed();
+            }
+            stm32_ota_task = STM32_OTA_TASK_NONE;
+            if (stm32_update_url) {
+                free(stm32_update_url);
+            }
+            if (stm32_update_md5) {
+                free(stm32_update_md5);
+            }
+            stm32_update_url = NULL;
+            stm32_update_md5 = NULL;
+        }
         vTaskDelay( 50 / portTICK_PERIOD_MS );
     }
 }

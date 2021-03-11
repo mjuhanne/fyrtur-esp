@@ -10,6 +10,7 @@
 #include "uart.h"
 #include "iot_helper.h"
 #include "blinds.h"
+#include "stm_flash_http.h"
 
 static const char * TAG = "BLINDS";
 static const char * UART_TAG = "BLINDS_UART";
@@ -23,6 +24,7 @@ typedef enum packet_state_t {
 } packet_state_t;
 
 QueueHandle_t  blinds_queue = NULL;
+SemaphoreHandle_t uart_semaphore = NULL;
 
 #define BLINDS_TASK_CORE 1
 #define BLINDS_UART_TASK_CORE 1
@@ -50,7 +52,7 @@ static bool diagnostics = false;   // if this is set, more verbose diagnostics d
 int blinds_calibrating;
 int blinds_max_length;
 int blinds_full_length;
-int blinds_motor_status;
+blinds_motor_status_t blinds_motor_status;
 int blinds_location;
 int blinds_target_location;
 int blinds_default_speed;
@@ -78,7 +80,7 @@ unsigned long last_status_timestamps[MAX_STATUS_REGISTERS];
 
 static const char * direction2txt[3] = { "Up", "Stopped", "Down" };
 
-static const char * motor_status2txt[5] = { "Stopped", "Moving", "Stopping", "CalibratingEndPoint", "Error" };
+static const char * motor_status2txt[6] = { "Stopped", "Moving", "Stopping", "CalibratingEndPoint", "Bootloader", "Error" };
 
 static const char * blinds_status2txt[6] = { "Unknown", "Stopped", "Stopping", "Moving", "MovingInSteps", "Calibrating" }; 
 
@@ -130,6 +132,7 @@ static const char cmd_ext_go_to_location[2] = { 0x70, 0x00 }; // location is the
 static const char cmd_ext_debug[2] = { 0xcc, 0xd1 };
 static const char cmd_ext_sensor_debug[2] = { 0xcc, 0xd2 };
 
+static const char cmd_ext_jump_to_bootloader[2] = { 0xff, 0x00 };
 
 char * blinds_get_version() {
     return version;
@@ -145,11 +148,13 @@ void blinds_set_diagnostics( bool _diagnostics ) {
 }
 
 int blinds_send_cmd_bytes( uint8_t cmd_byte1, uint8_t cmd_byte2 ) {
-    static char cmd [] = { 0x00, 0xff, 0x9a, 0x00, 0x00, 0x00};
+    static uint8_t cmd [] = { 0x00, 0xff, 0x9a, 0x00, 0x00, 0x00};
     cmd[3] = cmd_byte1;
     cmd[4] = cmd_byte2;
     cmd[5] = cmd_byte1 ^ cmd_byte2;
+    xSemaphoreTake(uart_semaphore, portMAX_DELAY);
     int txBytes = uart_write( cmd, 6); 
+    xSemaphoreGive(uart_semaphore);
     return txBytes;
 }
 
@@ -640,6 +645,21 @@ int blinds_read_status_reg( status_register_t status_reg ) {
     return blinds_queue_cmd_int(blinds_cmd_status, status_reg);
 }
 
+
+int blinds_read_status_reg_blocking( status_register_t status_reg, int ms ) {
+    unsigned long now = iot_timestamp();
+    if (blinds_queue_cmd_int(blinds_cmd_status, status_reg)) {
+        while ( (iot_timestamp() - now < ms) && (last_status_timestamps[status_reg] < now) ) {
+            vTaskDelay( 20 / portTICK_PERIOD_MS );
+        }
+        if (last_status_timestamps[status_reg] < now)
+            return 0;
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
 int blinds_read_ext_status_reg() {
 	return blinds_queue_cmd(blinds_cmd_ext_status);
 }
@@ -793,6 +813,28 @@ int blinds_toggle_orientation() {
     return blinds_queue_cmd(blinds_cmd_toggle_orientation);
 }
 
+
+int blinds_task_enter_bootloader() {
+    blinds_send_cmd( cmd_ext_jump_to_bootloader );
+    return 1;
+}
+
+int blinds_enter_bootloader() {
+    ESP_LOGI(TAG,"Entering STM32 bootloader via software method.. ");
+    blinds_queue_cmd(blinds_cmd_enter_bootloader);
+    unsigned long now = iot_timestamp();
+    while ( (iot_timestamp() - now < 1000) && (blinds_motor_status != BLINDS_MOTOR_BOOTLOADER) ) {
+        vTaskDelay( 20 / portTICK_PERIOD_MS );
+    }
+    if (blinds_motor_status == BLINDS_MOTOR_BOOTLOADER) {
+        ESP_LOGI(TAG,"OK! Entering bootloader..");
+    } else {
+        ESP_LOGE(TAG,"Could not enter bootloader!");
+        return 0;
+    }
+    return 1;
+}
+
 int blinds_get_speed() {
 	return blinds_speed;
 }
@@ -902,11 +944,6 @@ void blinds_process_limit_status_reg( int calibrating, int orientation, int max_
  * Motor current and status is just for debugging purposes
  */
 void blinds_process_ext_status_reg( int status, int current, int speed, float position) {
-	ESP_LOGI(UART_TAG,"EXT_STAT: status: %s, current %d mA, speed %d RPM, position %.2f", 
-        blinds_get_motor_status_str(), current, speed, position);
-
-    blinds_process_status( speed, position );   // speed and position will be processed separately
-
     if (blinds_motor_status != status) {
         blinds_motor_status = status;
         blinds_variable_updated(BLINDS_MOTOR_STATUS);
@@ -915,6 +952,12 @@ void blinds_process_ext_status_reg( int status, int current, int speed, float po
         blinds_motor_current = current;
         blinds_variable_updated(BLINDS_MOTOR_CURRENT);
     }
+
+	ESP_LOGI(UART_TAG,"EXT_STAT: status: %s, current %d mA, speed %d RPM, position %.2f", 
+        blinds_get_motor_status_str(), current, speed, position);
+
+    blinds_process_status( speed, position );   // speed and position will be processed separately
+
 	last_status_timestamps[EXT_STATUS_REG] = iot_timestamp();
 }
 
@@ -975,226 +1018,237 @@ void blinds_uart_task(void *pvParameter) {
     // the additional number of bytes. If header is unknown, we assume the protocol is out of sync/corrupted, so we skip the first byte
     // of the header and read one more byte and repeat until a valid header is received.
     while (1) {
-		static uint8_t data[9];
-		packet_state_t packet_state = PACKET_INCOMPLETE;
-		const int rxBytes = uart_read( &data[totRxBytes], expectedBytes-totRxBytes, 1000 );
-		totRxBytes += rxBytes;
-		if (totRxBytes==expectedBytes) {
 
-            //ESP_LOGD(UART_TAG, "rcv - Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+       //ESP_LOGI(UART_TAG, "Taking semaphore");
+        if (uart_semaphore && xSemaphoreTake(uart_semaphore, portMAX_DELAY)) {
 
-		    if ( (data[0]==0) && (data[1]==0xff) && (data[2]==0xd8) ) {
-		    	// Status #1
-		    	if (totRxBytes != 8) {
-		    		expectedBytes = 8;
-		    	} else {
-			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
-			        if (checksum == data[7]) {
-			    	// STATUS
-			            blinds_process_status_reg_1( data[3], data[4], data[5], data[6] );
-			            packet_state = PACKET_VALID;
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
-			    }
+    		static uint8_t data[9];
+    		packet_state_t packet_state = PACKET_INCOMPLETE;
+    		const int rxBytes = uart_read( &data[totRxBytes], expectedBytes-totRxBytes, 100 );
 
-			} else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd6) ) {
-	        	// Status #2
-		    	if (totRxBytes < 9) {
-		    		expectedBytes = 9;
-		    	} else {
-			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-			        if (checksum == data[8]) {
-			        	blinds_process_status_reg_2(STATUS_REG_2, &data[3], 5);
-			            packet_state = PACKET_VALID;
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
+            xSemaphoreGive(uart_semaphore);
+            //ESP_LOGI(UART_TAG, "Gave semaphore");
 
-		    	}
+            if (rxBytes > 0) {
+                totRxBytes += rxBytes;
+            }
 
-		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd4) ) {
-	        	// Status #3
-		    	if (totRxBytes < 9) {
-		    		expectedBytes = 9;
-		    	} else {
-			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-			        if (checksum == data[8]) {
-			        	blinds_process_status_reg_2(STATUS_REG_3, &data[3], 5);
-			            packet_state = PACKET_VALID;
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
+    		if (totRxBytes == expectedBytes) {
 
-		    	}
+                //ESP_LOGD(UART_TAG, "rcv - Stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
-		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd9) ) {
-	        	// Status #4
-		    	if (totRxBytes < 6) {
-		    		expectedBytes = 6;
-		    	} else {
-			        checksum = data[3] ^ data[4];
-			        if (checksum == data[5]) {
-			        	blinds_process_status_reg_2(STATUS_REG_4, &data[3], 2);
-			            packet_state = PACKET_VALID;
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
+    		    if ( (data[0]==0) && (data[1]==0xff) && (data[2]==0xd8) ) {
+    		    	// Status #1
+    		    	if (totRxBytes != 8) {
+    		    		expectedBytes = 8;
+    		    	} else {
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
+    			        if (checksum == data[7]) {
+    			    	// STATUS
+    			            blinds_process_status_reg_1( data[3], data[4], data[5], data[6] );
+    			            packet_state = PACKET_VALID;
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+    			    }
 
-		    	}
-            } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd0) ) {
-                // EXTENDED VERSION
-                if (totRxBytes != 8) {
-                    expectedBytes = 8;
-                } else {
-                    checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
-                    if (checksum == data[7]) {
-                        blinds_process_ext_version_reg( data[3], data[4], data[5], data[6] );
-                        packet_state = PACKET_VALID;
+    			} else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd6) ) {
+    	        	// Status #2
+    		    	if (totRxBytes < 9) {
+    		    		expectedBytes = 9;
+    		    	} else {
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+    			        if (checksum == data[8]) {
+    			        	blinds_process_status_reg_2(STATUS_REG_2, &data[3], 5);
+    			            packet_state = PACKET_VALID;
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+
+    		    	}
+
+    		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd4) ) {
+    	        	// Status #3
+    		    	if (totRxBytes < 9) {
+    		    		expectedBytes = 9;
+    		    	} else {
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+    			        if (checksum == data[8]) {
+    			        	blinds_process_status_reg_2(STATUS_REG_3, &data[3], 5);
+    			            packet_state = PACKET_VALID;
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+
+    		    	}
+
+    		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd9) ) {
+    	        	// Status #4
+    		    	if (totRxBytes < 6) {
+    		    		expectedBytes = 6;
+    		    	} else {
+    			        checksum = data[3] ^ data[4];
+    			        if (checksum == data[5]) {
+    			        	blinds_process_status_reg_2(STATUS_REG_4, &data[3], 2);
+    			            packet_state = PACKET_VALID;
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+
+    		    	}
+                } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd0) ) {
+                    // EXTENDED VERSION
+                    if (totRxBytes != 8) {
+                        expectedBytes = 8;
                     } else {
-                        packet_state = PACKET_INVALID;
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
+                        if (checksum == data[7]) {
+                            blinds_process_ext_version_reg( data[3], data[4], data[5], data[6] );
+                            packet_state = PACKET_VALID;
+                        } else {
+                            packet_state = PACKET_INVALID;
+                        }
                     }
-                }
-            } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd1) ) {
-                // EXTENDED LOCATION
-                if (totRxBytes != 8) {
-                    expectedBytes = 8;
-                } else {
-                    checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
-                    if (checksum == data[7]) {
-                        int16_t target_location = data[5]*256 + data[6]; // preserve sign 
-                        blinds_process_ext_location_reg( data[3]*256 + data[4], target_location  );
-                        packet_state = PACKET_VALID;
+                } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd1) ) {
+                    // EXTENDED LOCATION
+                    if (totRxBytes != 8) {
+                        expectedBytes = 8;
                     } else {
-                        packet_state = PACKET_INVALID;
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
+                        if (checksum == data[7]) {
+                            int16_t target_location = data[5]*256 + data[6]; // preserve sign 
+                            blinds_process_ext_location_reg( data[3]*256 + data[4], target_location  );
+                            packet_state = PACKET_VALID;
+                        } else {
+                            packet_state = PACKET_INVALID;
+                        }
                     }
-                }
-            } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd2) ) {
-                // DEBUG BYTES
-                if (totRxBytes != 9) {
-                    expectedBytes = 9;
-                } else {
-                    checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-                    if (checksum == data[8]) {
-                        ESP_LOGW(UART_TAG,"debug bytes: unused %d, dir_error %d, cal %d, stopped_ticks %d, unused %d ",  data[3], data[4], data[5], data[6], data[7]);
-                        packet_state = PACKET_VALID;
+                } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd2) ) {
+                    // DEBUG BYTES
+                    if (totRxBytes != 9) {
+                        expectedBytes = 9;
                     } else {
-                        packet_state = PACKET_INVALID;
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+                        if (checksum == data[8]) {
+                            ESP_LOGW(UART_TAG,"debug bytes: unused %d, dir_error %d, cal %d, stopped_ticks %d, unused %d ",  data[3], data[4], data[5], data[6], data[7]);
+                            packet_state = PACKET_VALID;
+                        } else {
+                            packet_state = PACKET_INVALID;
+                        }
                     }
-                }
-            } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd3) ) {
-                // SENSOR DEBUG BYTES
-                if (totRxBytes != 9) {
-                    expectedBytes = 9;
-                } else {
-                    checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-                    if (checksum == data[8]) {
-//                        ESP_LOGW(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
-                        ESP_LOGW(UART_TAG,"sensor debug bytes: c1 %d c2 %d c3 %d c4 %d c5 %d ", data[3]*8, data[4]*8, data[5]*8, data[6]*8, data[7]*8);
-                        packet_state = PACKET_VALID;
+                } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd3) ) {
+                    // SENSOR DEBUG BYTES
+                    if (totRxBytes != 9) {
+                        expectedBytes = 9;
                     } else {
-                        packet_state = PACKET_INVALID;
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+                        if (checksum == data[8]) {
+    //                        ESP_LOGW(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
+                            ESP_LOGW(UART_TAG,"sensor debug bytes: c1 %d c2 %d c3 %d c4 %d c5 %d ", data[3]*8, data[4]*8, data[5]*8, data[6]*8, data[7]*8);
+                            packet_state = PACKET_VALID;
+                        } else {
+                            packet_state = PACKET_INVALID;
+                        }
                     }
-                }
-		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xda) ) {
-		        // EXTENDED STATUS
-		    	if (totRxBytes != 9) {
-		    		expectedBytes = 9;
-		    	} else {
-			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-			        if (checksum == data[8]) {
-			        	blinds_process_ext_status_reg( data[3], data[4]*8, data[5], data[6] + (float)data[7]/256 );
-			            packet_state = PACKET_VALID;
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
-		        }
-		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xdb) ) {
-		        // LIMIT STATUS
-		    	if (totRxBytes != 9) {
-		    		expectedBytes = 9;
-		    	} else {
-			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-			        if (checksum == data[8]) {
-			            packet_state = PACKET_VALID;
-			            blinds_process_limit_status_reg( data[3]&1, (data[3]>>1)&1, data[4]*256 + data[5], data[6]*256 + data[7] );
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
-		        }
-            } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd5) ) {
-                // TUNING PARAMETERS
-                if (totRxBytes != 9) {
-                    expectedBytes = 9;
-                } else {
-                    checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-                    if (checksum == data[8]) {
-                        packet_state = PACKET_VALID;
-                        blinds_process_tuning_params_reg( data[3], data[4], data[5]*8, data[6]*8, data[7] );
+    		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xda) ) {
+    		        // EXTENDED STATUS
+    		    	if (totRxBytes != 9) {
+    		    		expectedBytes = 9;
+    		    	} else {
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+    			        if (checksum == data[8]) {
+    			        	blinds_process_ext_status_reg( data[3], data[4]*8, data[5], data[6] + (float)data[7]/256 );
+    			            packet_state = PACKET_VALID;
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+    		        }
+    		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xdb) ) {
+    		        // LIMIT STATUS
+    		    	if (totRxBytes != 9) {
+    		    		expectedBytes = 9;
+    		    	} else {
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+    			        if (checksum == data[8]) {
+    			            packet_state = PACKET_VALID;
+    			            blinds_process_limit_status_reg( data[3]&1, (data[3]>>1)&1, data[4]*256 + data[5], data[6]*256 + data[7] );
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+    		        }
+                } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd5) ) {
+                    // TUNING PARAMETERS
+                    if (totRxBytes != 9) {
+                        expectedBytes = 9;
                     } else {
-                        packet_state = PACKET_INVALID;
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
+                        if (checksum == data[8]) {
+                            packet_state = PACKET_VALID;
+                            blinds_process_tuning_params_reg( data[3], data[4], data[5]*8, data[6]*8, data[7] );
+                        } else {
+                            packet_state = PACKET_INVALID;
+                        }
                     }
-                }
-		    } else if ( (data[0]==0x00) && (data[1]==0xab) && (data[2]==0xba) ) {
-		    	// Response to PING
-		    	if (totRxBytes != 8) {
-		    		expectedBytes = 8;
-		    	} else {
-			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
-			        if (checksum == data[7]) {
-			        	if ( (data[3]==0x00) && (data[4]==0xff) && (data[5]==0x9a) ) {
-	    		        	ESP_LOGI(UART_TAG,"VALID PING:  id 0x%x", data[6]);
-				            packet_state = PACKET_VALID;
-	        			} else {
-	            			ESP_LOGE(UART_TAG,"INVALID PING 0x%x 0x%x 0x%x , id 0x%x", data[3], data[4], data[5], data[6]);
-	        			}
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
-			    }
+    		    } else if ( (data[0]==0x00) && (data[1]==0xab) && (data[2]==0xba) ) {
+    		    	// Response to PING
+    		    	if (totRxBytes != 8) {
+    		    		expectedBytes = 8;
+    		    	} else {
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
+    			        if (checksum == data[7]) {
+    			        	if ( (data[3]==0x00) && (data[4]==0xff) && (data[5]==0x9a) ) {
+    	    		        	ESP_LOGI(UART_TAG,"VALID PING:  id 0x%x", data[6]);
+    				            packet_state = PACKET_VALID;
+    	        			} else {
+    	            			ESP_LOGE(UART_TAG,"INVALID PING 0x%x 0x%x 0x%x , id 0x%x", data[3], data[4], data[5], data[6]);
+    	        			}
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+    			    }
+    		    } else if ( (data[0]==0xde) && (data[1]==0xad) ) {
+    		    	// Error message (Motor module received incomplete packet). Used for debugging only for now
+    		    	if (totRxBytes != 8) {
+    		    		expectedBytes = 8;
+    		    	} else {
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
+    			        if (checksum == data[7]) {
+    			            ESP_LOGE(UART_TAG,"ERROR MSG. Motor received %d bytes. First 4 bytes: 0x%x 0x%x 0x%x 0x%x", data[2], data[3], data[4], data[5], data[6]);
+    			            packet_state = PACKET_VALID;
+    			        } else {
+    			        	packet_state = PACKET_INVALID;
+    			        }
+    		        }
+    		    } else {
+    		    	// UNKNOWN HEADER!
+    	        	// Try omitting first byte and then reading one more byte in case we are out of sync
+    	        	for (int i=0;i<2;i++)
+    	        		data[i] = data[i+1];
+    	        	totRxBytes = 2;
+    		    } 
 
-		    } else if ( (data[0]==0xde) && (data[1]==0xad) ) {
-		    	// Error message (Motor module received incomplete packet). Used for debugging only for now
-		    	if (totRxBytes != 8) {
-		    		expectedBytes = 8;
-		    	} else {
-			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
-			        if (checksum == data[7]) {
-			            ESP_LOGE(UART_TAG,"ERROR MSG. Motor received %d bytes. First 4 bytes: 0x%x 0x%x 0x%x 0x%x", data[2], data[3], data[4], data[5], data[6]);
-			            packet_state = PACKET_VALID;
-			        } else {
-			        	packet_state = PACKET_INVALID;
-			        }
-		        }
-		    } else {
-		    	// UNKNOWN HEADER!
-	        	// Try omitting first byte and then reading one more byte in case we are out of sync
-	        	for (int i=0;i<2;i++)
-	        		data[i] = data[i+1];
-	        	totRxBytes = 2;
-		    } 
+    		    if (packet_state == PACKET_INVALID) {
+    	            ESP_LOGE(UART_TAG,"Invalid checksum: %d != %d", checksum, data[totRxBytes-1]);
+    	            ESP_LOG_BUFFER_HEXDUMP(UART_TAG, data, totRxBytes, ESP_LOG_ERROR);
+    	        }
+    		    
+    		    if (packet_state != PACKET_INCOMPLETE) {
+    		    	// reset packet state
+    		    	totRxBytes = 0;
+    		    	expectedBytes = 3;
+    		    }
 
-		    if (packet_state == PACKET_INVALID) {
-	            ESP_LOGE(UART_TAG,"Invalid checksum: %d != %d", checksum, data[totRxBytes-1]);
-	            ESP_LOG_BUFFER_HEXDUMP(UART_TAG, data, totRxBytes, ESP_LOG_ERROR);
-	        }
-		    
-		    if (packet_state != PACKET_INCOMPLETE) {
-		    	// reset packet state
-		    	totRxBytes = 0;
-		    	expectedBytes = 3;
-		    }
-
-		} else {
-		    if (totRxBytes==0) {
-		        //ESP_LOGE(TAG,"read_status timeout!");
-		    } else {
-		        ESP_LOGE(UART_TAG,"invalid data length (%d)!",totRxBytes);
-		        ESP_LOG_BUFFER_HEXDUMP(UART_TAG, data, totRxBytes, ESP_LOG_ERROR);
-		        totRxBytes = 0;      
-		    }
-		    expectedBytes = 3;
-		}
+    		} else {
+    		    if (totRxBytes==0) {
+    		        //ESP_LOGE(TAG,"read_status timeout!");
+    		    } else {
+    		        ESP_LOGE(UART_TAG,"invalid data length (%d)!",totRxBytes);
+    		        ESP_LOG_BUFFER_HEXDUMP(UART_TAG, data, totRxBytes, ESP_LOG_ERROR);
+    		        totRxBytes = 0;      
+    		    }
+    		    expectedBytes = 3;
+    		}
+        }
 
         vTaskDelay(10 / portTICK_PERIOD_MS);    		
     }
@@ -1345,6 +1399,11 @@ void blinds_task(void *pvParameter) {
                             }
                         }
                         break;
+                    case blinds_cmd_enter_bootloader: {
+                            ESP_LOGI(TAG,"Entering bootloader");
+                            blinds_task_enter_bootloader();
+                        }
+                        break;
             		default: {
     	        			ESP_LOGE(TAG,"Unknown command! (%d)",msg.cmd);
             			}
@@ -1377,11 +1436,18 @@ void blinds_task(void *pvParameter) {
 }
 
 
-
 void blinds_init() {
     esp_log_level_set(TAG, ESP_LOG_INFO);
 
     blinds_queue = xQueueCreate( 10, sizeof( blinds_msg  ) );
+
+    uart_semaphore = xSemaphoreCreateBinary();
+    if (uart_semaphore) {
+        xSemaphoreGive(uart_semaphore);
+    } else {
+        ESP_LOGI(TAG,"Out of mem!");
+        return;
+    }
 
     init_uart();    
 

@@ -14,8 +14,7 @@ static const char * TAG = "UART";
 
 static const int UART_RX_BUF_SIZE = 1024;
 
-void init_uart() {
-    ESP_LOGI(TAG,"Configuring motor unit UART..");
+void uart_config() {
     uart_config_t uart_config = {
         .baud_rate = 2400,
         .data_bits = UART_DATA_8_BITS,
@@ -24,9 +23,15 @@ void init_uart() {
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         //.source_clk = UART_SCLK_APB,
     };
+    uart_param_config(UART_NUM_1, &uart_config);
+
+}
+
+void init_uart() {
+    ESP_LOGI(TAG,"Configuring motor unit UART..");
     // We won't use a buffer for sending data.
     uart_driver_install(UART_NUM_1, UART_RX_BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_1, &uart_config);
+    uart_config();
 #ifdef ESP32
     uart_set_pin(UART_NUM_1, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 #else
@@ -40,7 +45,7 @@ void init_uart() {
 }
 
 
-int uart_write( const char * bytes, int bytes_num ) {
+int uart_write( uint8_t * bytes, int bytes_num ) {
 #ifdef ESP32
     return uart_write_bytes(UART_NUM_1, bytes, bytes_num);
 #else
@@ -51,7 +56,7 @@ int uart_write( const char * bytes, int bytes_num ) {
 
 int uart_read( uint8_t * rx_buffer, int bytes, int timeout ) {
 #ifdef ESP32
-    return uart_read_bytes(UART_NUM_1, rx_buffer, bytes, timeout);
+    return uart_read_bytes(UART_NUM_1, rx_buffer, bytes, timeout / portTICK_PERIOD_MS);
 #else
     if (swserial_handle == NULL)
         return 0;

@@ -13,6 +13,7 @@ First, why would one want to re-invent the wheel and replace the Ikea wireless m
 * Allow the use of "front roll" configuration** (curtain rod flipped 180 degrees) to give 2-3cm space between window and the blinds
 * Enable the use of blinds longer than 195cm!
 * Possibility to integrate temperature/humidity sensors or maybe a window break-in sensor?
+* OTA firmware updating of the STM32 motor module (see below)
 
 There also exists [a custom firmware for the Fyrtur motor module](https://github.com/mjuhanne/fyrtur-motor-board) that makes it possible to have more finer control of the motor unit along with several enhancements:
 
@@ -57,6 +58,7 @@ cd components
 git clone https://github.com/mjuhanne/node-framework.git
 git clone https://github.com/mjuhanne/esp-wifi-manager.git
 git clone https://github.com/mjuhanne/esp-si7021.git
+git clone https://github.com/mjuhanne/idf-stm-flash.git
 ```
 Chdir to *fyrtur-esp* directory and build the application (use default menuconfig settings). Then deploy the application while monitoring the debug console for any possible errors.
 ```
@@ -246,10 +248,23 @@ Pair the Ikea remotes (or other remotes if you wish) with the Zigbee hub/router 
 ```
 /home/control/[node name]/button/[button number]/state  (payload: pushed/held/released)
 ```
-Currently double-click is not yet supported so (re)setting lower limit is to be achieved with buttons on the blinds (or the related MQTT messages).
-	
 
-#### OTA update
+Another method is to setup a custom MQTT topic that the module with subscribe to:
+```
+/home/control/[node name]/set/button_topic  (payload: MQTT topic)
+```
+e.g.
+```
+/home/control/fyrtur-kitchen-1/set/button_topic  (payload: /home/zigbee2mqtt/ikea_remote_1/state)
+```
+Module will then subscribe to */home/zigbee2mqtt/ikea_remote_1/state* and will scan for *"open"*, *"close"* and *"stop"* keywords in the payload and act accordingly.
+
+
+Currently double-click or long-press are not yet supported so (re)setting lower limit or slow movement commands are to be achieved with physical buttons on the blinds (or the related MQTT messages).
+
+
+
+#### ESP32 module OTA update
 The node-framework supports OTA updates via HTTP. The process is initiated with a MQTT topic:
 - `/home/control/fyrtur-e975c1/update_firmware`
 	- Payload: URL of the ESP firmware
@@ -260,6 +275,29 @@ When process is started, LED will stay on until OTA update is complete. The modu
 Note that the OTA update procedure currently supports **only non-secure HTTP!** HTTPS support would require providing the Fyrtur module with at least a root certificate of a root certificate authority (a public one or one that you created yourself). Uploading the certificate could be done via Access point in configuration stage (this would need additional changes to the esp-wifi-manager). This same certificate could be used to enable SSL support for MQTT server as well.
 
 
+#### STM32 module OTA update
+
+Starting from motor module firmware version 0.80 it's possible to update its firmare using only the existing UART wiring. However if the motor module contains earlier version (or the original Ikea firmware), one must disassemble the motor unit anyway and use ST-Link via Serial-Wire Debug interface to flash the newest firmware. Only after that are subsequent OTA updates possible.
+
+Updates are done by downloading the firmware file from HTTP server and then checking the file integrity with MD5 checksum. Updating is initiated with MQTT topic:
+- `/home/control/[node-name]/stm32update`
+	- Payload: {firmware URL} {MD5 checksum}
+		- Example: *http://myfirmwareserver.local/esp/fyrtur.bin 26cf6a94fcd44c5b44e2e590ad29c308*
+	- Payload: {firmware URL} {MD5 checksum file URL}
+		- Example: *http://myfirmwareserver.local/esp/fyrtur.bin http://myfirmwareserver.local/esp/fyrtur.bin.md5*
+		- This will download also *http://myfirmwareserver.local/esp/fyrtur.bin.md5* MD5 file and use that for checking the file integrity
+	- Payload: {firmware URL} FETCH
+		- Example: *http://myfirmwareserver.local/esp/fyrtur.bin FETCH*
+		- This will append '.md5' to firmware URL and download the MD5 file (in this case *http://myfirmwareserver.local/esp/fyrtur.bin.md5* ) 
+	- Payload: {firmware URL} 0
+		- Example: *http://myfirmwareserver.local/esp/fyrtur.bin 0*
+		- This will skip the MD5 checksum. 
+
+OTA process can be following from topic `/home/node/[node-name]/stm32ota` and more detailed log from `/home/node/[node-name]/stm32ota_log`
+
+When process is started the LED will stay on until OTA update is complete. If OTA update failed, LED will blink 5 times quickly, repeated by 3 times.
+
+Warning! It's possible to brick your motor module if the OTA update is interrupted half-way. The only way to recover from this is then to re-flash the firmware using SWD interface. For this reason it is recommended that when you are taking the time to disassemble the motor unit for the first time to flash the custom firmware, you also should route the SWD wires outside the motor unit enclosure in order to avoid dismantling the whole Fyrtur setup again :)
 
 
 

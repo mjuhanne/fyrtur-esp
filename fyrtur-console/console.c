@@ -16,10 +16,12 @@
 #include "driver/gpio.h"
 #include "si7021.h"
 #include "wifi_manager.h"
-
+#include "mqtt_manager.h"
+#include "../main/stm32ota.h"
 
 static const char * TAG = "CONSOLE";
 
+#define CONSOLE_TASK_CORE 1
 #define PROMPT_STR CONFIG_IDF_TARGET
 
 const char* prompt = LOG_COLOR_I PROMPT_STR "> " LOG_RESET_COLOR;
@@ -38,6 +40,7 @@ static struct {
     struct arg_str *arg1;
     struct arg_str *arg2;
     struct arg_str *arg3;
+    struct arg_str *arg4;
     struct arg_end *end;
 } node_cmd_args;
 
@@ -211,10 +214,25 @@ static int console_blinds_cmd(int argc, char **argv)
             return 1;
         }
         blinds_set_orientation(cmd_byte2);
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "stm32update")==0) {
+        if (blinds_cmd_args.arg2->count == 1) {
+            if (blinds_cmd_args.arg3->count == 1) {
+                blinds_stm32_ota(blinds_cmd_args.arg2->sval[0], blinds_cmd_args.arg3->sval[0], 0 );
+            } else {
+                blinds_stm32_ota(blinds_cmd_args.arg2->sval[0], NULL, 0 );
+            }
+        } else {
+            blinds_stm32_ota("http://firmware.local:80/fyrtur-stm32.bin", NULL, 0);
+        } 
+    } else if (strcmp(blinds_cmd_args.arg1->sval[0], "stm32info")==0) {
+        if (blinds_cmd_args.arg2->count == 1) {
+            blinds_stm32_ota(NULL, NULL, atoi(blinds_cmd_args.arg2->sval[0]));
+        } else {
+            blinds_stm32_ota(NULL, NULL, 0);
+        }
     } else {
         ESP_LOGE(TAG, "Invalid arg %s", blinds_cmd_args.arg1->sval[0] );
     }
-    
     return 0;
 }
 
@@ -246,6 +264,21 @@ static int console_node_cmd(int argc, char **argv)
         } else {
             ESP_LOGE(TAG,"Invalid number of args(%d)", argc);
         }
+    } else if (strcmp(node_cmd_args.arg1->sval[0], "disconnect")==0) {
+        wifi_manager_disconnect_async();
+    } else if (strcmp(node_cmd_args.arg1->sval[0], "mqtt")==0) {
+        if (argc > 1) {
+            mqtt_manager_set_uri( node_cmd_args.arg2->sval[0] );
+            if (argc > 3) {
+                mqtt_manager_set_username( node_cmd_args.arg3->sval[0] );
+                mqtt_manager_set_password( node_cmd_args.arg4->sval[0] );
+            }
+            mqtt_manager_connect_async();
+        } else {
+            ESP_LOGE(TAG,"Invalid number of args(%d)", argc);
+        }
+    } else {
+        ESP_LOGE(TAG,"Invalid command (%s)", node_cmd_args.arg1->sval[0]);        
     }
     return 0;
 }
@@ -347,6 +380,7 @@ void initialize_console()
     node_cmd_args.arg1 = arg_str1(NULL, NULL, "<arg1>", "command");
     node_cmd_args.arg2 = arg_str0(NULL, NULL, "<arg2>", "ARG #1 of command");
     node_cmd_args.arg3 = arg_str0(NULL, NULL, "<arg3>", "ARG #2 of command");
+    node_cmd_args.arg4 = arg_str0(NULL, NULL, "<arg4>", "ARG #3 of command");
     node_cmd_args.end = arg_end(0);
 
     // Maintenance commands for node. 
@@ -362,33 +396,45 @@ void initialize_console()
 
 }
 
-bool run_console() {
+void console_task() {
 
-    /* Get a line using linenoise.
-     * The line is returned when ENTER is pressed.
-     */
-    char* line = linenoise(prompt);
-    if (line == NULL) { /* Break on EOF or error */
-        return false;
-    }
-    /* Add the command to the history if not empty*/
-    if (strlen(line) > 0) {
-        linenoiseHistoryAdd(line);
-    }
+    initialize_console();
 
-    /* Try to run the command */
-    int ret;
-    esp_err_t err = esp_console_run(line, &ret);
-    if (err == ESP_ERR_NOT_FOUND) {
-        printf("Unrecognized command\n");
-    } else if (err == ESP_ERR_INVALID_ARG) {
-        // command was empty
-    } else if (err == ESP_OK && ret != ESP_OK) {
-        printf("Command returned non-zero error code: 0x%x (%s)\n", ret, esp_err_to_name(ret));
-    } else if (err != ESP_OK) {
-        printf("Internal error: %s\n", esp_err_to_name(err));
+    while (1) {
+
+        /* Get a line using linenoise.
+         * The line is returned when ENTER is pressed.
+         */
+        char* line = linenoise(prompt);
+
+        if (line != NULL) {
+
+            /* Add the command to the history if not empty*/
+            if (strlen(line) > 0) {
+                linenoiseHistoryAdd(line);
+            }
+
+            /* Try to run the command */
+            int ret;
+            esp_err_t err = esp_console_run(line, &ret);
+            if (err == ESP_ERR_NOT_FOUND) {
+                printf("Unrecognized command\n");
+            } else if (err == ESP_ERR_INVALID_ARG) {
+                // command was empty
+            } else if (err == ESP_OK && ret != ESP_OK) {
+                printf("Command returned non-zero error code: 0x%x (%s)\n", ret, esp_err_to_name(ret));
+            } else if (err != ESP_OK) {
+                printf("Internal error: %s\n", esp_err_to_name(err));
+            }
+            /* linenoise allocates line buffer on the heap, so need to free it */
+            linenoiseFree(line);
+        }
+
     }
-    /* linenoise allocates line buffer on the heap, so need to free it */
-    linenoiseFree(line);
-    return true;
 }
+
+
+void start_console_task() {
+    xTaskCreatePinnedToCore(&console_task, "console_task", 4096, NULL, 5, NULL, CONSOLE_TASK_CORE);
+}
+

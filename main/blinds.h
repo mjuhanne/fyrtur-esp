@@ -9,6 +9,15 @@ typedef enum motor_firmware_status {
 	CUSTOM_FW
 } motor_firmware_status_t;
 
+typedef enum blinds_motor_status {
+	BLINDS_MOTOR_STOPPED = 0,
+	BLINDS_MOTOR_MOVING,
+	BLINDS_MOTOR_STOPPING,
+	BLINDS_MOTOR_CALIBRATING,
+	BLINDS_MOTOR_BOOTLOADER,
+	BLINDS_MOTOR_ERROR,
+} blinds_motor_status_t;
+
 typedef enum blinds_status {
 	BLINDS_UNKNOWN = 0,
 	BLINDS_STOPPED,
@@ -45,7 +54,8 @@ typedef enum blinds_cmd_t {
 	blinds_cmd_set_stall_detection_timeout,
 	blinds_cmd_set_max_motor_current,
 	blinds_cmd_toggle_orientation,
-	blinds_cmd_reset_orientation
+	blinds_cmd_reset_orientation,
+	blinds_cmd_enter_bootloader
 } blinds_cmd_t;
 
 typedef enum blinds_variable_t {
@@ -72,13 +82,8 @@ typedef enum blinds_orientation_t {
 
 typedef struct blinds_msg {
     blinds_cmd_t cmd;
-    //blinds_direction_t direction;
-    //float position, revs;
     int int_param_1, int_param_2, int_param_3;
     float float_param_1;
-    //bool override_limits;
-    //bool force_small_steps;
-    //uint8_t cmd_byte1, cmd_byte2;
 } blinds_msg;
 
 typedef enum status_register_t {
@@ -115,6 +120,7 @@ int blinds_set_max_length();	// sets the max curtain length to the current posit
 int blinds_set_full_length();	// sets the max curtain length to the current position
 
 int blinds_read_status_reg(status_register_t status_reg);
+int blinds_read_status_reg_blocking( status_register_t status_reg, int ms);
 
 float blinds_get_position();
 float blinds_get_voltage();
@@ -147,6 +153,8 @@ int blinds_get_orientation();
 int blinds_get_current();
 const char * blinds_get_motor_status_str();
 char * blinds_get_version();
+
+int blinds_enter_bootloader();
 
 int blinds_set_location(int location);
 

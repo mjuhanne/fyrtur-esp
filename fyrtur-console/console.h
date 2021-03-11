@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-void initialize_console();
+void start_console_task();
 
 #ifdef __cplusplus
 }
