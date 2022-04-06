@@ -26,6 +26,8 @@ static const char * TAG = "CONSOLE";
 
 const char* prompt = LOG_COLOR_I PROMPT_STR "> " LOG_RESET_COLOR;
 
+extern void fyrtur_toggle_publish_variables( bool setting );
+
 
 /** Arguments used by 'blinds' function */
 static struct {
@@ -158,14 +160,16 @@ static int console_blinds_cmd(int argc, char **argv)
         blinds_read_status_reg(EXT_SENSOR_DEBUG_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "info")==0) {
         blinds_read_status_reg(EXT_STATUS_REG);
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
         blinds_read_status_reg(EXT_LOCATION_REG);
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
         blinds_read_status_reg(EXT_DEBUG_REG);
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
         blinds_read_status_reg(EXT_SENSOR_DEBUG_REG);
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
         blinds_read_status_reg(EXT_TUNING_PARAMS_REG);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
+        blinds_read_status_reg(EXT_VERSION_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "ext_status")==0) {
         blinds_read_status_reg(EXT_STATUS_REG);
     } else if (strcmp(blinds_cmd_args.arg1->sval[0], "limits")==0) {
@@ -276,6 +280,12 @@ static int console_node_cmd(int argc, char **argv)
             mqtt_manager_connect_async();
         } else {
             ESP_LOGE(TAG,"Invalid number of args(%d)", argc);
+        }
+    } else if (strcmp(node_cmd_args.arg1->sval[0], "publish")==0) {
+        if (argc > 1) {
+            fyrtur_toggle_publish_variables( (strcmp(node_cmd_args.arg2->sval[0], "on") == 0) ? 1 : 0 );
+        } else {
+            ESP_LOGE(TAG,"Invalid number of args(%d)", argc);            
         }
     } else {
         ESP_LOGE(TAG,"Invalid command (%s)", node_cmd_args.arg1->sval[0]);        

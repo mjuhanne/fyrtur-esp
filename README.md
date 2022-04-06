@@ -163,7 +163,7 @@ Other MQTT remote control topics:
 	- Payload: default motor speed in RPM (allowed values are between 2 and 25 RPM)
 - `/home/control/fyrtur-e975c1/set/speed`
 	- Payload: (temporary) motor speed in RPM
-	- Note! In contrast to "default_speed" above, this setting will not be written to EEPROM/FLASH in order to protect it from too frequent writes. Consequently this command can be used to develop for example variable curtain speed functionality (e.g. faster speed for quick curtain rewinding followed by slower speed when approaching the endpoint)
+	- Note! In contrast to "default_speed" above, this setting will not be written to EEPROM/FLASH in order to protect it from too frequent writes. Consequently this command can be used to switch to slower (quieter) speed in the morning and then later in the day use faster speeds.
 - `/home/control/fyrtur-e975c1/set/minimum_voltage`
 	- Payload: minimum operating voltage
 	- The original Fyrtur module uses 7.4V battery which should be protected from under-voltage. The new module is intended to be supplied by 5-8 volt DC adapter so there's no need for battery protection anymore. The default setting is 0 (protection disabled). If needed, one can set the minimum operating voltage under which the motor will not be powered. **Note that this restriction will apply only to the DC motor, but not the STM32 chip inside motor module nor the ESP module! Using DC adapter is still highly recommended!**

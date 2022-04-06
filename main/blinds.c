@@ -12,6 +12,8 @@
 #include "blinds.h"
 #include "stm_flash_http.h"
 
+#define BLINDS_BUILD_VERSION __DATE__ "-" __TIME__
+
 static const char * TAG = "BLINDS";
 static const char * UART_TAG = "BLINDS_UART";
 
@@ -43,7 +45,7 @@ blinds_status_t blinds_status = BLINDS_UNKNOWN;
 float blinds_motor_pos;	// Position reported by motor unit (between 0-100%). Custom firmware will handle finer granularity (0.0 - 100.0%)
 int blinds_battery_status;
 float blinds_voltage;
-int blinds_speed;  // Current speed in rpm. 
+float blinds_speed;  // Current speed in rpm. 
 int blinds_target_speed;
 
 static bool diagnostics = false;   // if this is set, more verbose diagnostics data is sent via MQTT
@@ -134,7 +136,7 @@ static const char cmd_ext_sensor_debug[2] = { 0xcc, 0xd2 };
 
 static const char cmd_ext_jump_to_bootloader[2] = { 0xff, 0x00 };
 
-char * blinds_get_version() {
+const char * blinds_get_version() {
     return version;
 }
 
@@ -204,7 +206,7 @@ int blinds_queue_cmd_float( blinds_cmd_t cmd, float param1 ) {
      return 1;  
 }
 
-void blinds_process_status( int speed, float pos ) {
+void blinds_process_status( float speed, float pos ) {
     if (blinds_speed != speed) {
         blinds_speed = speed;
         blinds_variable_updated(BLINDS_SPEED);
@@ -258,14 +260,14 @@ void blinds_process_status( int speed, float pos ) {
         blinds_variable_updated(BLINDS_DIRECTION);        
     }
  
-    ESP_LOGI(TAG,"STATUS:%s, st_bits 0x%x, %.1fV, SPD %d RPM, POS %.2f (TARGET %.2f), STEPW_REVS %.2f", 
+    ESP_LOGI(TAG,"STATUS:%s, st_bits 0x%x, %.1fV, SPD %.2f RPM, POS %.2f (TARGET %.2f), STEPW_REVS %.2f", 
         blinds_status2txt[blinds_status], blinds_battery_status, blinds_voltage, blinds_speed, blinds_motor_pos, 
         blinds_target_position, blinds_revs );
 }
 
 
 void blinds_task_read_status_reg( status_register_t status_reg ) {
-    ESP_LOGW(TAG, "blinds_task_read_status_reg - Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+    ESP_LOGD(TAG, "blinds_task_read_status_reg - Stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
 	if (status_reg == STATUS_REG_1)
 	    blinds_send_cmd( cmd_status );
@@ -725,7 +727,7 @@ int blinds_task_set_max_motor_current(int max_current) {
     char cmd[2];
     if (motor_firmware_status == CUSTOM_FW) {
         cmd[0] = cmd_ext_set_max_motor_current[0];
-        cmd[1] = (uint8_t)max_current/8;
+        cmd[1] = (uint8_t)max_current/16;
         blinds_send_cmd( cmd ); 
     }
     return 1;
@@ -835,7 +837,7 @@ int blinds_enter_bootloader() {
     return 1;
 }
 
-int blinds_get_speed() {
+float blinds_get_speed() {
 	return blinds_speed;
 }
 
@@ -903,6 +905,9 @@ int blinds_get_target_position() {
     return blinds_target_position;
 }
 
+const char * blinds_get_build_version() {
+    return BLINDS_BUILD_VERSION;
+}
 
 void blinds_process_status_reg_1( int battery_status, int voltage, int speed, int pos ) {
     blinds_battery_status = battery_status;
@@ -943,7 +948,7 @@ void blinds_process_limit_status_reg( int calibrating, int orientation, int max_
  * Reports position with greater resolution than original firmware
  * Motor current and status is just for debugging purposes
  */
-void blinds_process_ext_status_reg( int status, int current, int speed, float position) {
+void blinds_process_ext_status_reg( int status, int current, float speed, float position, int pwm) {
     if (blinds_motor_status != status) {
         blinds_motor_status = status;
         blinds_variable_updated(BLINDS_MOTOR_STATUS);
@@ -953,8 +958,8 @@ void blinds_process_ext_status_reg( int status, int current, int speed, float po
         blinds_variable_updated(BLINDS_MOTOR_CURRENT);
     }
 
-	ESP_LOGI(UART_TAG,"EXT_STAT: status: %s, current %d mA, speed %d RPM, position %.2f", 
-        blinds_get_motor_status_str(), current, speed, position);
+	ESP_LOGI(UART_TAG,"EXT_STAT: status: %s, current %d mA, speed %.2f RPM, position %.2f pwm %d", 
+        blinds_get_motor_status_str(), current, speed, position, pwm);
 
     blinds_process_status( speed, position );   // speed and position will be processed separately
 
@@ -962,9 +967,9 @@ void blinds_process_ext_status_reg( int status, int current, int speed, float po
 }
 
 
-void blinds_process_tuning_params_reg( int slowdown_factor, int min_slowdown_speed, int stall_detection_timeout, int max_motor_current, int last_stalling_current) {
-    ESP_LOGI(UART_TAG,"TUNING_PARAMS: slowdown_factor %d, min_slowdown_speed %d, stall_detection_timeout %d, max_motor_current %d mA, last_stalling_current %d",
-        slowdown_factor, min_slowdown_speed, stall_detection_timeout, max_motor_current, last_stalling_current);
+void blinds_process_tuning_params_reg( int slowdown_factor, int min_slowdown_speed, int stall_detection_timeout, int max_motor_current, int extra_value) {
+    ESP_LOGI(UART_TAG,"TUNING_PARAMS: slowdown_factor %d, min_slowdown_speed %d, stall_detection_timeout %d, max_motor_current %d mA, extra_value %d",
+        slowdown_factor, min_slowdown_speed, stall_detection_timeout, max_motor_current, extra_value);
     last_status_timestamps[EXT_TUNING_PARAMS_REG] = iot_timestamp();
 }
 
@@ -1130,7 +1135,7 @@ void blinds_uart_task(void *pvParameter) {
                     } else {
                         checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
                         if (checksum == data[8]) {
-                            ESP_LOGW(UART_TAG,"debug bytes: unused %d, dir_error %d, cal %d, stopped_ticks %d, unused %d ",  data[3], data[4], data[5], data[6], data[7]);
+                            ESP_LOGI(UART_TAG,"debug bytes: last error %d, sleep_delay %d ms, cal %d, stopped_ticks %d, highest_curr %d ",  data[3], data[4]*256, data[5], data[6], data[7]*16);
                             packet_state = PACKET_VALID;
                         } else {
                             packet_state = PACKET_INVALID;
@@ -1143,8 +1148,8 @@ void blinds_uart_task(void *pvParameter) {
                     } else {
                         checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
                         if (checksum == data[8]) {
-    //                        ESP_LOGW(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
-                            ESP_LOGW(UART_TAG,"sensor debug bytes: c1 %d c2 %d c3 %d c4 %d c5 %d ", data[3]*8, data[4]*8, data[5]*8, data[6]*8, data[7]*8);
+                            ESP_LOGI(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
+                            //ESP_LOGW(UART_TAG,"sensor debug bytes: c1 %d c2 %d c3 %d c4 %d c5 %d ", data[3]*8, data[4]*8, data[5]*8, data[6]*8, data[7]*8);
                             packet_state = PACKET_VALID;
                         } else {
                             packet_state = PACKET_INVALID;
@@ -1152,12 +1157,12 @@ void blinds_uart_task(void *pvParameter) {
                     }
     		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xda) ) {
     		        // EXTENDED STATUS
-    		    	if (totRxBytes != 9) {
-    		    		expectedBytes = 9;
+    		    	if (totRxBytes != 10) {
+    		    		expectedBytes = 10;
     		    	} else {
-    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-    			        if (checksum == data[8]) {
-    			        	blinds_process_ext_status_reg( data[3], data[4]*8, data[5], data[6] + (float)data[7]/256 );
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7] ^ data[8];
+    			        if (checksum == data[9]) {
+    			        	blinds_process_ext_status_reg( data[3], data[4]*16, (float)data[5]/4, data[6] + (float)data[7]/256, data[8] );
     			            packet_state = PACKET_VALID;
     			        } else {
     			        	packet_state = PACKET_INVALID;
@@ -1184,12 +1189,12 @@ void blinds_uart_task(void *pvParameter) {
                         checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
                         if (checksum == data[8]) {
                             packet_state = PACKET_VALID;
-                            blinds_process_tuning_params_reg( data[3], data[4], data[5]*8, data[6]*8, data[7] );
+                            blinds_process_tuning_params_reg( data[3], data[4], data[5]*8, data[6]*8, data[7]*2 );
                         } else {
                             packet_state = PACKET_INVALID;
                         }
                     }
-    		    } else if ( (data[0]==0x00) && (data[1]==0xab) && (data[2]==0xba) ) {
+    		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xba) ) {
     		    	// Response to PING
     		    	if (totRxBytes != 8) {
     		    		expectedBytes = 8;
@@ -1267,7 +1272,7 @@ void blinds_task(void *pvParameter) {
 
     	if (blinds_queue != NULL) {
             if (xQueueReceive(blinds_queue,&msg,(TickType_t )(20/portTICK_PERIOD_MS))) {
-                ESP_LOGW(TAG, "queue - Stack: %d", uxTaskGetStackHighWaterMark(NULL));
+                ESP_LOGD(TAG, "queue - Stack: %d", uxTaskGetStackHighWaterMark(NULL));
 
             	switch (msg.cmd) {
             		case blinds_cmd_move: {
@@ -1345,7 +1350,7 @@ void blinds_task(void *pvParameter) {
                         }
                         break;
             		case blinds_cmd_status: {
-            				ESP_LOGI(TAG,"Read status reg %d", (int)msg.int_param_1);
+            				ESP_LOGD(TAG,"Read status reg %d", (int)msg.int_param_1);
 	            			blinds_task_read_status_reg(msg.int_param_1);
             			}
             			break;

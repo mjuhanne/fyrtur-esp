@@ -81,6 +81,7 @@ const char node_base_name[] = TAG;
 static bool sensor_detected = false;
 static uint32_t sensor_broadcast_interval;
 static bool diagnostics = false;    // if this is set, more verbose diagnostics data is sent via MQTT
+static bool publish_variables = true;
 
 typedef enum {
     STM32_OTA_TASK_NONE = 0,
@@ -380,7 +381,14 @@ int node_handle_mqtt_msg(void * arg) {
 }
 
 
+void fyrtur_toggle_publish_variables( bool setting ) {
+    publish_variables = setting;
+}
+
 void blinds_variable_updated( blinds_variable_t variable ) {
+    if (!publish_variables)
+        return;
+
     switch (variable) {
         case BLINDS_POSITION: {
             // Motor reports position between 0 (open) and 100 (closed). 
@@ -473,11 +481,21 @@ void node_publish_ha_cfg() {
 
 void node_publish_node_info() {
     mqtt_publish_ext("node", "version", NODE_BUILD_VERSION, true);
+    mqtt_publish_ext("node", "blinds_engine_version", blinds_get_build_version(), true);
+
+    if (diagnostics) {
+        if (custom_button_topic != NULL) {
+            mqtt_publish_ext("node", "custom_button_topic", custom_button_topic, true);
+        } else {            
+            mqtt_publish_ext("node", "custom_button_topic", "Not defined", true);
+        }
+    }
 
     motor_firmware_status_t fw_status = blinds_get_firmware_status();
     if (fw_status == CUSTOM_FW) {
         mqtt_publish_ext("node", "motor_version", blinds_get_version(), true);
 
+        // calling blinds_variable_updated forces publishing these parameters
         blinds_variable_updated(BLINDS_POSITION);
         blinds_variable_updated(BLINDS_VOLTAGE);
         blinds_variable_updated(BLINDS_SPEED);

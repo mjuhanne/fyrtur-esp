@@ -124,7 +124,7 @@ int blinds_read_status_reg_blocking( status_register_t status_reg, int ms);
 
 float blinds_get_position();
 float blinds_get_voltage();
-int blinds_get_speed();
+float blinds_get_speed();
 
 blinds_status_t blinds_get_status();
 const char * blinds_get_status_str();
@@ -152,7 +152,8 @@ int blinds_get_calibration_status();
 int blinds_get_orientation();
 int blinds_get_current();
 const char * blinds_get_motor_status_str();
-char * blinds_get_version();
+const char * blinds_get_version();
+const char * blinds_get_build_version();
 
 int blinds_enter_bootloader();
 
