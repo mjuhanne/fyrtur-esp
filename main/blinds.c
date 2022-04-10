@@ -35,8 +35,6 @@ SemaphoreHandle_t uart_semaphore = NULL;
 
 motor_firmware_status_t motor_firmware_status;  // motor firmware status (not detected / original / custom)
 
-char version[MAX_VERSION_LENGTH];
-
 int version_major, version_minor;
 
 static int polling_interval = 0;
@@ -52,12 +50,13 @@ static bool diagnostics = false;   // if this is set, more verbose diagnostics d
 
 // These are reported only by custom firmware and are used for diagnostics only
 int blinds_calibrating;
+int blinds_auto_calibration;
 int blinds_max_length;
 int blinds_full_length;
 blinds_motor_status_t blinds_motor_status;
 int blinds_location;
 int blinds_target_location;
-int blinds_default_speed;
+float blinds_default_speed;
 int blinds_orientation;
 int blinds_motor_current;
 
@@ -77,8 +76,13 @@ unsigned long last_move_cmd_timestamp;
 unsigned long next_move_cmd_timestamp;
 unsigned long last_status_timestamps[MAX_STATUS_REGISTERS];
 
-// 171 (GEAR RATIO) * (13 + 265.0/360)(revolutions) * 4 (interrupt ticks per revolution)
-#define FYRTUR_ORIGINAL_FULL_LENGTH 9396
+#define GEAR_RATIO 171
+#define INTERRUPT_TICKS_PER_MOTOR_SHAFT_REVOLUTION 4
+#define MAXIMUM_TURNS (13 + 265.0/360)
+
+#define TICKS_TO_TURNS(x) ((float)x/GEAR_RATIO/INTERRUPT_TICKS_PER_MOTOR_SHAFT_REVOLUTION)
+#define FYRTUR_ORIGINAL_FULL_LENGTH (GEAR_RATIO * MAXIMUM_TURNS * INTERRUPT_TICKS_PER_MOTOR_SHAFT_REVOLUTION) // 9396
+
 
 static const char * direction2txt[3] = { "Up", "Stopped", "Down" };
 
@@ -136,8 +140,24 @@ static const char cmd_ext_sensor_debug[2] = { 0xcc, 0xd2 };
 
 static const char cmd_ext_jump_to_bootloader[2] = { 0xff, 0x00 };
 
-const char * blinds_get_version() {
+char version[MAX_VERSION_LENGTH];
+
+// Shift dividors/multipliers for sending and receiving data to/from UART
+#define RPM_DECIMAL_BITS 2
+#define MOTOR_CURRENT_SHIFT_BITS 4
+#define STALL_DETECTION_TIMEOUT_SHIFT_BITS 3
+#define IDLE_MODE_SLEEP_DELAY_SHIFT_BITS 8
+
+const char * blinds_get_motor_version_str() {
+    snprintf(version, MAX_VERSION_LENGTH, "%d.%d", version_major, version_minor);
     return version;
+}
+
+int blinds_get_motor_version_major() {
+    return version_major;
+}
+int blinds_get_motor_version_minor() {
+    return version_major;
 }
 
 motor_firmware_status_t blinds_get_firmware_status() {
@@ -260,7 +280,7 @@ void blinds_process_status( float speed, float pos ) {
         blinds_variable_updated(BLINDS_DIRECTION);        
     }
  
-    ESP_LOGI(TAG,"STATUS:%s, st_bits 0x%x, %.1fV, SPD %.2f RPM, POS %.2f (TARGET %.2f), STEPW_REVS %.2f", 
+    ESP_LOGI(TAG,"STATUS:%s, battery %d, %.1fV, SPD %.2f RPM, POS %.2f (TARGET %.2f), STEPW_REVS %.2f", 
         blinds_status2txt[blinds_status], blinds_battery_status, blinds_voltage, blinds_speed, blinds_motor_pos, 
         blinds_target_position, blinds_revs );
 }
@@ -546,7 +566,7 @@ int blinds_task_reset_max_length() {
     ESP_LOGI(TAG,"Reset maximum blind length and calibrate..");
     blinds_send_cmd( cmd_reset_max_length );
     // delay until motor has settled
-    vTaskDelay(200 / portTICK_PERIOD_MS);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
     int i=0;
     while ( (blinds_motor_pos != 0x32) && (i<10) ) {
         blinds_task_read_status_reg_blocking(STATUS_REG_1, 500);
@@ -559,6 +579,7 @@ int blinds_task_reset_max_length() {
 
         if (motor_firmware_status == CUSTOM_FW) {
             // read back the max length
+            vTaskDelay(200 / portTICK_PERIOD_MS);
             blinds_task_read_status_reg(EXT_LIMIT_STATUS_REG);
         }
     } else {
@@ -685,28 +706,28 @@ int blinds_task_set_speed(int speed) {
 	if (motor_firmware_status == CUSTOM_FW) {
         blinds_target_speed = speed;
 		cmd[0] = cmd_ext_set_speed[0];
-		cmd[1] = (uint8_t)speed;
+		cmd[1] = (uint8_t)(speed*(1<<RPM_DECIMAL_BITS));
         blinds_send_cmd( cmd );
     }
     return 1;
 }
 
-int blinds_set_speed(int speed) {
-    return blinds_queue_cmd_int(blinds_cmd_set_speed, speed);
+int blinds_set_speed(float speed) {
+    return blinds_queue_cmd_float(blinds_cmd_set_speed, speed);
 }
 
 int blinds_task_set_default_speed(int speed) {
     char cmd[2];
     if (motor_firmware_status == CUSTOM_FW) {
         cmd[0] = cmd_ext_set_default_speed[0];
-        cmd[1] = (uint8_t)speed;
+        cmd[1] = (uint8_t)(speed*(1<<RPM_DECIMAL_BITS));
         blinds_send_cmd( cmd ); 
     }
     return 1;
 }
 
-int blinds_set_default_speed(int speed) {
-    return blinds_queue_cmd_int(blinds_cmd_set_default_speed, speed);
+int blinds_set_default_speed(float speed) {
+    return blinds_queue_cmd_float(blinds_cmd_set_default_speed, speed);
 }
 
 int blinds_task_set_minimum_voltage(float voltage) {
@@ -727,7 +748,7 @@ int blinds_task_set_max_motor_current(int max_current) {
     char cmd[2];
     if (motor_firmware_status == CUSTOM_FW) {
         cmd[0] = cmd_ext_set_max_motor_current[0];
-        cmd[1] = (uint8_t)max_current/16;
+        cmd[1] = (uint8_t)(max_current >> MOTOR_CURRENT_SHIFT_BITS);
         blinds_send_cmd( cmd ); 
     }
     return 1;
@@ -922,11 +943,16 @@ void blinds_process_status_reg_1( int battery_status, int voltage, int speed, in
 }
 
 
-void blinds_process_limit_status_reg( int calibrating, int orientation, int max_length, int full_length ) {
-	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: calibrating: %d, orientation %d, max_length %d, full_length %d", calibrating, orientation, max_length, full_length );
+void blinds_process_limit_status_reg( int calibrating, int auto_cal, int orientation, int max_length, int full_length ) {
+	ESP_LOGI(UART_TAG,"EXT_LIMIT_STAT: calibrating: %d, auto_cal %d, orientation %d, max/full_length %d/%d ticks (%.2f/%.2f turns)", 
+        calibrating, auto_cal, orientation, max_length, full_length, TICKS_TO_TURNS(max_length), TICKS_TO_TURNS(full_length) );
     if (blinds_calibrating != calibrating) {
         blinds_calibrating = calibrating;   
         blinds_variable_updated(BLINDS_CALIBRATING_STATUS);     
+    }
+    if (blinds_auto_calibration != auto_cal) {
+        blinds_auto_calibration = auto_cal;   
+        blinds_variable_updated(BLINDS_AUTO_CALIBRATION);     
     }
     if (blinds_orientation != orientation) {
         blinds_orientation = orientation;   
@@ -948,7 +974,7 @@ void blinds_process_limit_status_reg( int calibrating, int orientation, int max_
  * Reports position with greater resolution than original firmware
  * Motor current and status is just for debugging purposes
  */
-void blinds_process_ext_status_reg( int status, int current, float speed, float position, int pwm) {
+void blinds_process_ext_status_reg( int status, int current, float speed, float position, int pwm, int extra) {
     if (blinds_motor_status != status) {
         blinds_motor_status = status;
         blinds_variable_updated(BLINDS_MOTOR_STATUS);
@@ -958,8 +984,8 @@ void blinds_process_ext_status_reg( int status, int current, float speed, float 
         blinds_variable_updated(BLINDS_MOTOR_CURRENT);
     }
 
-	ESP_LOGI(UART_TAG,"EXT_STAT: status: %s, current %d mA, speed %.2f RPM, position %.2f pwm %d", 
-        blinds_get_motor_status_str(), current, speed, position, pwm);
+	ESP_LOGI(UART_TAG,"EXT_STAT: status: %s, current %d mA, speed %.2f RPM, position %.2f pwm %d extra %d", 
+        blinds_get_motor_status_str(), current, speed, position, pwm, extra);
 
     blinds_process_status( speed, position );   // speed and position will be processed separately
 
@@ -967,9 +993,9 @@ void blinds_process_ext_status_reg( int status, int current, float speed, float 
 }
 
 
-void blinds_process_tuning_params_reg( int slowdown_factor, int min_slowdown_speed, int stall_detection_timeout, int max_motor_current, int extra_value) {
-    ESP_LOGI(UART_TAG,"TUNING_PARAMS: slowdown_factor %d, min_slowdown_speed %d, stall_detection_timeout %d, max_motor_current %d mA, extra_value %d",
-        slowdown_factor, min_slowdown_speed, stall_detection_timeout, max_motor_current, extra_value);
+void blinds_process_tuning_params_reg( int slowdown_factor, float min_slowdown_speed, int stall_detection_timeout, int max_motor_current, int idle_mode_sleep_delay) {
+    ESP_LOGI(UART_TAG,"TUNING_PARAMS: slowdown_factor %d, min_slowdown_speed %.2f, stall_detection_timeout %d ms, max_motor_current %d mA, sleep_delay %d ms",
+        slowdown_factor, min_slowdown_speed, stall_detection_timeout, max_motor_current, idle_mode_sleep_delay);
     last_status_timestamps[EXT_TUNING_PARAMS_REG] = iot_timestamp();
 }
 
@@ -987,10 +1013,11 @@ void blinds_process_ext_location_reg( int location, int target_location ) {
     }
 }
 
-void blinds_process_ext_version_reg( int version_major, int version_minor, int voltage_check, int default_speed ) {
-    ESP_LOGI(UART_TAG,"VERSION: version %d.%d. Minimum voltage: %.2f. Default speed %d", 
-        version_major, version_minor, (float)voltage_check/16, default_speed);
-    snprintf(version, MAX_VERSION_LENGTH, "%d.%d", version_major, version_minor);
+void blinds_process_ext_version_reg( int _version_major, int _version_minor, int voltage_check, float default_speed ) {
+    ESP_LOGI(UART_TAG,"VERSION: version %d.%d. Minimum voltage: %.2f. Default speed %.2f", 
+        _version_major, _version_minor, (float)voltage_check/16, default_speed);
+    version_major = _version_major;
+    version_minor = _version_minor;
     blinds_default_speed = default_speed;
     last_status_timestamps[EXT_VERSION_REG] = iot_timestamp();
 }
@@ -1019,7 +1046,7 @@ void blinds_uart_task(void *pvParameter) {
     int expectedBytes = 3;
     int checksum;
 
-    // Since the received data packet can be 8 or 9 bytes long, in this loop we first just read 3 bytes (the header) and then anticipate
+    // Since the received data packet can be 8-12 bytes long, in this loop we first just read 3 bytes (the header) and then anticipate
     // the additional number of bytes. If header is unknown, we assume the protocol is out of sync/corrupted, so we skip the first byte
     // of the header and read one more byte and repeat until a valid header is received.
     while (1) {
@@ -1103,12 +1130,12 @@ void blinds_uart_task(void *pvParameter) {
     		    	}
                 } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd0) ) {
                     // EXTENDED VERSION
-                    if (totRxBytes != 8) {
-                        expectedBytes = 8;
+                    if (totRxBytes != 10) {
+                        expectedBytes = 10;
                     } else {
-                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6];
-                        if (checksum == data[7]) {
-                            blinds_process_ext_version_reg( data[3], data[4], data[5], data[6] );
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7] ^ data[8];
+                        if (checksum == data[9]) {
+                            blinds_process_ext_version_reg( data[3], data[4], data[5], (float)data[6]/(1<<RPM_DECIMAL_BITS) );
                             packet_state = PACKET_VALID;
                         } else {
                             packet_state = PACKET_INVALID;
@@ -1130,12 +1157,13 @@ void blinds_uart_task(void *pvParameter) {
                     }
                 } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd2) ) {
                     // DEBUG BYTES
-                    if (totRxBytes != 9) {
-                        expectedBytes = 9;
+                    if (totRxBytes != 12) {
+                        expectedBytes = 12;
                     } else {
-                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-                        if (checksum == data[8]) {
-                            ESP_LOGI(UART_TAG,"debug bytes: last error %d, sleep_delay %d ms, cal %d, stopped_ticks %d, highest_curr %d ",  data[3], data[4]*256, data[5], data[6], data[7]*16);
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7] ^ data[8] ^ data[9]  ^ data[10];
+                        if (checksum == data[11]) {
+                            ESP_LOGI(UART_TAG,"debug: last err %d, highest_curr %d, last_stall_curr %d, stalled_pwm %d, stalled_up/down_count %d/%d, flexi_trig: %d, extra: %d",  
+                                    data[3], data[4]<<MOTOR_CURRENT_SHIFT_BITS, data[5]<<MOTOR_CURRENT_SHIFT_BITS, data[6], data[7], data[8], data[9], data[10]);
                             packet_state = PACKET_VALID;
                         } else {
                             packet_state = PACKET_INVALID;
@@ -1143,13 +1171,13 @@ void blinds_uart_task(void *pvParameter) {
                     }
                 } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd3) ) {
                     // SENSOR DEBUG BYTES
-                    if (totRxBytes != 9) {
-                        expectedBytes = 9;
+                    if (totRxBytes != 10) {
+                        expectedBytes = 10;
                     } else {
-                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-                        if (checksum == data[8]) {
-                            ESP_LOGI(UART_TAG,"sensor debug bytes: hall1ticks %d, hall2ticks %d, unused %d ", data[3]*256+data[4], data[5]*256+data[6], data[7]);
-                            //ESP_LOGW(UART_TAG,"sensor debug bytes: c1 %d c2 %d c3 %d c4 %d c5 %d ", data[3]*8, data[4]*8, data[5]*8, data[6]*8, data[7]*8);
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7] ^ data[8];
+                        if (checksum == data[9]) {
+                            ESP_LOGI(UART_TAG,"sensor debug: hall1ticks %d, hall2ticks %d, ticks_while_cal %d, ticks_while_stopped %d ", 
+                                    data[3]*256+data[4], data[5]*256+data[6], data[7], data[8]);
                             packet_state = PACKET_VALID;
                         } else {
                             packet_state = PACKET_INVALID;
@@ -1157,12 +1185,13 @@ void blinds_uart_task(void *pvParameter) {
                     }
     		    } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xda) ) {
     		        // EXTENDED STATUS
-    		    	if (totRxBytes != 10) {
-    		    		expectedBytes = 10;
+    		    	if (totRxBytes != 11) {
+    		    		expectedBytes = 11;
     		    	} else {
-    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7] ^ data[8];
-    			        if (checksum == data[9]) {
-    			        	blinds_process_ext_status_reg( data[3], data[4]*16, (float)data[5]/4, data[6] + (float)data[7]/256, data[8] );
+    			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7] ^ data[8] ^ data[9];
+    			        if (checksum == data[10]) {
+    			        	blinds_process_ext_status_reg( data[3], data[4]<<MOTOR_CURRENT_SHIFT_BITS, 
+                                (float)data[5]/(1<<RPM_DECIMAL_BITS), data[6] + (float)data[7]/256, data[8],data[9] );
     			            packet_state = PACKET_VALID;
     			        } else {
     			        	packet_state = PACKET_INVALID;
@@ -1176,20 +1205,21 @@ void blinds_uart_task(void *pvParameter) {
     			        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
     			        if (checksum == data[8]) {
     			            packet_state = PACKET_VALID;
-    			            blinds_process_limit_status_reg( data[3]&1, (data[3]>>1)&1, data[4]*256 + data[5], data[6]*256 + data[7] );
+    			            blinds_process_limit_status_reg( data[3]&1, (data[3]>>2)&1, (data[3]>>1)&1, data[4]*256 + data[5], data[6]*256 + data[7] );
     			        } else {
     			        	packet_state = PACKET_INVALID;
     			        }
     		        }
                 } else if ( (data[0]==0x00) && (data[1]==0xff) && (data[2]==0xd5) ) {
                     // TUNING PARAMETERS
-                    if (totRxBytes != 9) {
-                        expectedBytes = 9;
+                    if (totRxBytes != 11) {
+                        expectedBytes = 11;
                     } else {
-                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7];
-                        if (checksum == data[8]) {
+                        checksum = data[3] ^ data[4] ^ data[5] ^ data[6] ^ data[7] ^ data[8] ^ data[9];
+                        if (checksum == data[10]) {
                             packet_state = PACKET_VALID;
-                            blinds_process_tuning_params_reg( data[3], data[4], data[5]*8, data[6]*8, data[7]*2 );
+                            blinds_process_tuning_params_reg( data[3], (float)data[4]/(1<<RPM_DECIMAL_BITS), 
+                                data[5]<<STALL_DETECTION_TIMEOUT_SHIFT_BITS, data[6]<<MOTOR_CURRENT_SHIFT_BITS, data[7]<<IDLE_MODE_SLEEP_DELAY_SHIFT_BITS );
                         } else {
                             packet_state = PACKET_INVALID;
                         }
@@ -1247,7 +1277,7 @@ void blinds_uart_task(void *pvParameter) {
     		    if (totRxBytes==0) {
     		        //ESP_LOGE(TAG,"read_status timeout!");
     		    } else {
-    		        ESP_LOGE(UART_TAG,"invalid data length (%d)!",totRxBytes);
+    		        ESP_LOGE(UART_TAG,"invalid data length %d (expected %d)!",totRxBytes, expectedBytes);
     		        ESP_LOG_BUFFER_HEXDUMP(UART_TAG, data, totRxBytes, ESP_LOG_ERROR);
     		        totRxBytes = 0;      
     		    }
@@ -1288,8 +1318,8 @@ void blinds_task(void *pvParameter) {
         	    		break;
             		case blinds_cmd_set_speed: {
             				if (motor_firmware_status == CUSTOM_FW) {
-	    	        			ESP_LOGI(TAG,"Setting speed to %d rpm", msg.int_param_1);
-    		        			blinds_task_set_speed(msg.int_param_1);
+	    	        			ESP_LOGI(TAG,"Setting speed to %.2f rpm", msg.float_param_1);
+    		        			blinds_task_set_speed(msg.float_param_1);
             				} else {
 	    	        			ESP_LOGE(TAG,"Setting speed not supported on original firmware!");            					
             				}
@@ -1297,8 +1327,8 @@ void blinds_task(void *pvParameter) {
         	    		break;
                     case blinds_cmd_set_default_speed: {
                             if (motor_firmware_status == CUSTOM_FW) {
-                                ESP_LOGI(TAG,"Setting default speed to %d rpm", msg.int_param_1);
-                                blinds_task_set_default_speed(msg.int_param_1);
+                                ESP_LOGI(TAG,"Setting default speed to %.2f rpm", msg.float_param_1);
+                                blinds_task_set_default_speed(msg.float_param_1);
                             } else {
                                 ESP_LOGE(TAG,"Setting defaut speed not supported on original firmware!");                              
                             }

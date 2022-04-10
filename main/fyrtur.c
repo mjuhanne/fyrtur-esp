@@ -493,7 +493,7 @@ void node_publish_node_info() {
 
     motor_firmware_status_t fw_status = blinds_get_firmware_status();
     if (fw_status == CUSTOM_FW) {
-        mqtt_publish_ext("node", "motor_version", blinds_get_version(), true);
+        mqtt_publish_ext("node", "motor_version", blinds_get_motor_version_str(), true);
 
         // calling blinds_variable_updated forces publishing these parameters
         blinds_variable_updated(BLINDS_POSITION);
@@ -722,7 +722,7 @@ void app_main()
     while (1) {
 
         if (sensor_detected) {
-            if (sensor_broadcast_interval != 0) {   // broadcast only if it isn't disabled
+            if ( (sensor_broadcast_interval != 0) && (publish_variables) ) {   // broadcast only if it isn't disabled
                 if (iot_timestamp() - sensor_timestamp > sensor_broadcast_interval ) {
                     sensor_timestamp = iot_timestamp();
 

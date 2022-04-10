@@ -72,7 +72,8 @@ typedef enum blinds_variable_t {
 	BLINDS_STATUS,
 	BLINDS_DIRECTION,
 	BLINDS_TARGET_POSITION,
-	BLINDS_ORIENTATION
+	BLINDS_ORIENTATION,
+	BLINDS_AUTO_CALIBRATION
 } blinds_variable_t;
 
 typedef enum blinds_orientation_t {
@@ -134,8 +135,8 @@ const char * blinds_get_direction_str();
 motor_firmware_status_t blinds_get_firmware_status();
 
 // These commands work only on custom firmware
-int blinds_set_speed(int speed);
-int blinds_set_default_speed(int speed);
+int blinds_set_speed(float speed);
+int blinds_set_default_speed(float speed);
 int blinds_set_minimum_voltage(float voltage);
 int blinds_set_auto_cal(bool enabled);
 int blinds_set_orientation( blinds_orientation_t orientation );
@@ -152,8 +153,10 @@ int blinds_get_calibration_status();
 int blinds_get_orientation();
 int blinds_get_current();
 const char * blinds_get_motor_status_str();
-const char * blinds_get_version();
+const char * blinds_get_motor_version_str();
 const char * blinds_get_build_version();
+int blinds_get_motor_version_major();
+int blinds_get_motor_version_minor();
 
 int blinds_enter_bootloader();
 
