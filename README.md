@@ -46,6 +46,7 @@ In the current state **it is recommended to use ESP32** since ESP8266 might not 
 
 #### SDK 
 Install the ESP32 SDK (esp-idf) by following the steps on the [installation page](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html). Make sure you can build and deploy an example project before continuing further.
+NOTE: as of 2023-11-05 - ESP-IDF V4.3.6 is the latest version which works
 
 #### Compiling and deployment
 Install the *fyrtur-esp* main program and its dependencies. The required components are shared by other home automation/ESP projects as well, so please create a directory layout as describe below:
@@ -60,9 +61,10 @@ git clone https://github.com/mjuhanne/esp-wifi-manager.git
 git clone https://github.com/mjuhanne/esp-si7021.git
 git clone https://github.com/mjuhanne/idf-stm-flash.git
 ```
-Chdir to *fyrtur-esp* directory and build the application (use default menuconfig settings). Then deploy the application while monitoring the debug console for any possible errors.
+Chdir to *fyrtur-esp/esp32* directory (or  *fyrtur-esp/esp8266* for ESP8266) and build the application (use default menuconfig settings). Then deploy the application while monitoring the debug console for any possible errors.
 ```
 idf.py menuconfig
+idf.py set-target esp32 (OR esp8266 for ESP8266)
 idf.py app
 idf.py -p /dev/tty.SLAB_USBtoUART flash monitor
 ```
